@@ -8,6 +8,10 @@ if (releasePropertiesFile.exists()) {
 def hasReleaseSigning = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].every {
     releaseProperties.getProperty(it)
 }
+def debugSuffix = project.findProperty('robertDebugSuffix') ?: '.debug'
+if (!debugSuffix.matches('\\.debug(?:\\.[a-z][a-z0-9_]*)*')) {
+    throw new GradleException('调试包后缀必须位于 .debug 命名空间内。')
+}
 if (!hasReleaseSigning && gradle.startParameter.taskNames.any { it.toLowerCase().contains('javarelease') }) {
     throw new GradleException('发布构建需要本机 .signing/release.properties，禁止使用上游公开测试签名。')
 }
@@ -91,6 +95,12 @@ android {
     }
 
     sourceSets {
+        debug {
+            // 调试构建可编入本地夹具；发布变体不读取该目录。
+            if (project.hasProperty('robertFixtureAssets')) {
+                assets.srcDir project.file(project.property('robertFixtureAssets'))
+            }
+        }
         java {
             java.srcDirs += 'src/normal/java'
         }
@@ -122,6 +132,7 @@ android {
     buildTypes {
         debug {
             minifyEnabled false
+            applicationIdSuffix debugSuffix
         }
         release {
             minifyEnabled true

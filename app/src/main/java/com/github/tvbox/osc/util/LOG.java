@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.util;
 
 import android.util.Log;
+import com.github.tvbox.osc.BuildConfig;
 
 /**
  * @author pj567
@@ -8,15 +9,15 @@ import android.util.Log;
  * @description:
  */
 public class LOG {
-    private static String TAG = "TVBox-runtime";
+    private static String TAG = "RobertTV-runtime";
     private static final int MAX_LOG_LENGTH = 3000;
 
     public static void e(String msg) {
-        Log.e(TAG, "" + msg);
+        if (BuildConfig.DEBUG) Log.e(TAG, "" + msg);
     }
 
     public static void i(String msg) {
-        Log.i(TAG, "" + msg);
+        if (BuildConfig.DEBUG) Log.i(TAG, "" + msg);
     }
 
     public static void longI(String prefix, String msg) {
@@ -28,6 +29,8 @@ public class LOG {
     }
 
     private static void longLog(int priority, String prefix, String msg) {
+        // 正式包不输出来源响应及播放地址，反馈问题时也不应公开原始调试日志。
+        if (!BuildConfig.DEBUG) return;
         String text = msg == null ? "null" : msg;
         String title = prefix == null ? "" : prefix;
         int length = text.length();

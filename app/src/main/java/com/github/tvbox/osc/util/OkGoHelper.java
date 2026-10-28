@@ -1,9 +1,11 @@
 package com.github.tvbox.osc.util;
 
 import android.graphics.Bitmap;
+import android.os.Build;
 
 import androidx.annotation.NonNull;
 
+import com.github.tvbox.osc.BuildConfig;
 import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.bean.ProxyRule;
@@ -16,7 +18,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.lzy.okgo.OkGo;
-import com.lzy.okgo.https.HttpsUtils;
 import com.lzy.okgo.interceptor.HttpLoggingInterceptor;
 import com.lzy.okgo.model.HttpHeaders;
 import com.orhanobut.hawk.Hawk;
@@ -25,7 +26,7 @@ import com.squareup.picasso.Picasso;
 import java.io.File;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.security.cert.CertificateException;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,7 +40,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
-import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Cache;
@@ -222,6 +224,11 @@ public class OkGoHelper {
         @NonNull
         @Override
         public List<InetAddress> lookup(@NonNull String hostname) throws UnknownHostException {
+            // 隔离回归包通过 adb reverse 访问原创本机夹具，不修改系统 DNS 或普通来源解析。
+            if (BuildConfig.DEBUG && BuildConfig.APPLICATION_ID.startsWith("io.github.roberbiu.roberttv.debug.fixture")
+                    && "127.0.0.1.nip.io".equals(hostname)) {
+                return Collections.singletonList(InetAddress.getByAddress(new byte[]{127, 0, 0, 1}));
+            }
             String originalHost = hostname;
             Map<String, String> hosts = myHosts;
             if (hosts == null) hosts = ApiConfig.get().getMyHost();
@@ -410,26 +417,19 @@ public class OkGoHelper {
     }
 
     private static synchronized void setOkHttpSsl(OkHttpClient.Builder builder) {
+        // 新系统保留 OkHttp 的平台证书和主机名校验；旧系统只补齐 TLS 协议兼容。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) return;
         try {
-            // 自定义一个信任所有证书的TrustManager，添加SSLSocketFactory的时候要用到
-            final X509TrustManager trustAllCert =
-                    new X509TrustManager() {
-                        @Override
-                        public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) throws CertificateException {
-                        }
-
-                        @Override
-                        public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) throws CertificateException {
-                        }
-
-                        @Override
-                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                            return new java.security.cert.X509Certificate[]{};
-                        }
-                    };
-            final SSLSocketFactory sslSocketFactory = new SSLSocketFactoryCompat(trustAllCert);
-            builder.sslSocketFactory(sslSocketFactory, trustAllCert);
-            builder.hostnameVerifier(HttpsUtils.UnSafeHostnameVerifier);
+            TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            factory.init((KeyStore) null);
+            for (TrustManager manager : factory.getTrustManagers()) {
+                if (manager instanceof X509TrustManager) {
+                    X509TrustManager trusted = (X509TrustManager) manager;
+                    builder.sslSocketFactory(new SSLSocketFactoryCompat(trusted), trusted);
+                    return;
+                }
+            }
+            throw new IllegalStateException("系统未提供证书信任管理器");
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
