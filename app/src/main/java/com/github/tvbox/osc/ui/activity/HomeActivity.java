@@ -1,6 +1,5 @@
 package com.github.tvbox.osc.ui.activity;
 
-import android.Manifest;
 import android.animation.Animator;
 import android.animation.AnimatorSet;
 import android.animation.IntEvaluator;
@@ -344,7 +343,7 @@ public class HomeActivity extends BaseActivity {
                 updateSortData(newSortData);
                 initViewPager(absXml);
                 updateHomeRec(absXml);
-                if (home != null && home.getName() != null && !home.getName().isEmpty()) tvName.setText(home.getName());
+                if (home != null && home.getName() != null && !home.getName().isEmpty()) tvName.setText(sourceTitle(home));
                 tvName.clearAnimation();
                 homeSortLoading = false;
                 loadingSourceKey = null;
@@ -362,11 +361,6 @@ public class HomeActivity extends BaseActivity {
     private void initData() {
         if (dataInitOk && jarInitOk) {
             loadHomeSort(false);
-            if (hasPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
-                LOG.e("有");
-            } else {
-                LOG.e("无");
-            }
             if (!useCacheConfig && Hawk.get(HawkConfig.DEFAULT_LOAD_LIVE, false)) {
                 jumpActivity(LivePlayActivity.class);
             }
@@ -514,12 +508,16 @@ public class HomeActivity extends BaseActivity {
         ApiConfig.get().warmSearchSpiders();
     }
 
+    private String sourceTitle(SourceBean source) {
+        return getString(R.string.app_name) + " · " + source.getName();
+    }
+
     private void loadHomeSort(boolean keepCurrentContent) {
         SourceBean home = ApiConfig.get().getHomeSourceBean();
         homeSortLoading = keepCurrentContent;
         if (keepCurrentContent && home != null && home.getName() != null && !home.getName().isEmpty()) {
             previousHomeName = tvName.getText() == null ? null : tvName.getText().toString();
-            tvName.setText(home.getName());
+            tvName.setText(sourceTitle(home));
         }
         tvNameAnimation();
         if (home == null) {

@@ -13,6 +13,7 @@ import java.io.Serializable;
 public class AbsXml implements Serializable {
     public String sourceKey;
     public String searchToken;
+    public int detailRequestGeneration;
 
     @XStreamAlias("list")
     public Movie movie;

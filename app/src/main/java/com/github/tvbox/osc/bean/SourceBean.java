@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.bean;
 
 import java.util.ArrayList;
+import java.util.Locale;
 
 public class SourceBean {
     private String key;
@@ -19,6 +20,7 @@ public class SourceBean {
     private int timeout; // 站点播放信息获取超时，单位秒
     private String clickSelector; // 需要点击播放的嗅探站点selector   ddrk.me;#id
     private String style; // 展示风格
+    private String authorization = "unknown"; // none 仅代表不要求账号授权，不保证可播
 
     private String safeString(String value) {
         return value == null ? "" : value;
@@ -140,4 +142,13 @@ public class SourceBean {
     public String getStyle() { return safeString(style); }
 
     public void setStyle(String style) { this.style = safeString(style); }
+
+    public String getAuthorization() {
+        return authorization == null ? "unknown" : authorization;
+    }
+
+    public void setAuthorization(String authorization) {
+        String value = authorization == null ? "unknown" : authorization.trim().toLowerCase(Locale.ROOT);
+        this.authorization = "none".equals(value) || "required".equals(value) ? value : "unknown";
+    }
 }

@@ -25,6 +25,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: 验证并构建当前工程
         run: |
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "local.properties"
           chmod +x gradlew
           ./gradlew :app:testJavaDebugUnitTest :app:assembleJavaDebug --no-daemon --console=plain
       - name: 保存单 APK 测试包

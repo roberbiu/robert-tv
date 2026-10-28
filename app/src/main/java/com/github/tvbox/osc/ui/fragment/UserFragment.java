@@ -158,6 +158,8 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
         EventBus.getDefault().register(this);
         sourceViewModel = new ViewModelProvider(this).get(SourceViewModel.class);
         tvLive = findViewById(R.id.tvLive);
+        // 首版未验收默认直播来源，不展示不能开箱使用的入口。
+        tvLive.setVisibility(View.GONE);
         tvSearch = findViewById(R.id.tvSearch);
         tvSetting = findViewById(R.id.tvSetting);
         tvCollect = findViewById(R.id.tvFavorite);

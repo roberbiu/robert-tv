@@ -24,6 +24,7 @@ import com.github.tvbox.osc.bean.LiveSettingItem;
 import com.github.tvbox.osc.bean.ParseBean;
 import com.github.tvbox.osc.bean.ProxyRule;
 import com.github.tvbox.osc.bean.SourceBean;
+import com.github.tvbox.osc.catalog.BuiltinCatalog;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.util.AES;
 import com.github.tvbox.osc.util.AdBlocker;
@@ -191,69 +192,29 @@ public class ApiConfig {
         return configUrl;
     }
     public void loadConfig(boolean useCache, LoadConfigCallback callback, Activity activity) {
-        String apiUrl = Hawk.get(HawkConfig.API_URL, "");
-        if (apiUrl.isEmpty()) {
-            callback.error("-1");
-            return;
-        }
-        File cache = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/" + MD5.encode(apiUrl));
-        if (useCache && cache.exists()) {
+        // 即使局域网控制端或旧设置写入了地址，也只加载项目维护的受控目录。
+        Hawk.put(HawkConfig.API_URL, BuiltinCatalog.MANAGED_URL);
+        configLoadExecutor.execute(() -> {
+            BuiltinCatalog catalog = BuiltinCatalog.get(App.getInstance());
             try {
-                String json = readConfigFile(cache);
-                if (switchApiCollectionIfNeeded(apiUrl, json)) {
-                    loadConfig(false, callback, activity);
-                    return;
-                }
-                clearApiLinesIfUnmatched(apiUrl);
-                parseJson(apiUrl, json);
-                callback.success();
-                return;
-            } catch (Throwable th) {
-                th.printStackTrace();
-            }
-        }
-        String configUrl=configUrl(apiUrl);
-
-        final String configKey = TempKey;
-
-        fetchConfigAsync(apiUrl, configUrl, configKey, new ConfigFetchCallback() {
-            @Override
-            public void success(String json) {
-                try {
-//                            LOG.longI("echo-ConfigJson", json);
-                    if (switchApiCollectionIfNeeded(apiUrl, json)) {
-                        FileUtils.saveCache(cache,json);
-                        loadConfig(false, callback, activity);
-                        return;
-                    }
-                    clearApiLinesIfUnmatched(apiUrl);
-                    parseJson(apiUrl, json);
-                    FileUtils.saveCache(cache,json);
-                    callback.success();
-                } catch (Throwable th) {
-                    th.printStackTrace();
-                    callback.error("配置解析失败");
-                }
-            }
-
-            @Override
-            public void error(String error) {
-                if (cache.exists()) {
+                String json = catalog.loadLocal();
+                mainHandler.post(() -> {
                     try {
-                        String json = readConfigFile(cache);
-                        if (switchApiCollectionIfNeeded(apiUrl, json)) {
-                            loadConfig(false, callback, activity);
-                            return;
-                        }
-                        clearApiLinesIfUnmatched(apiUrl);
-                        parseJson(apiUrl, json);
-                        callback.success();
+                        HistoryHelper.clearApiLineList();
+                        VideoParseRuler.clearRule();
+                        parseJson(BuiltinCatalog.MANAGED_URL, json);
+                    } catch (RuntimeException error) {
+                        LOG.i("Robert影视默认目录初始化失败");
+                        callback.error("默认内容暂时无法初始化，请重试");
                         return;
-                    } catch (Throwable th) {
-                        th.printStackTrace();
                     }
-                }
-                callback.error("拉取配置失败\n" + error);
+                    callback.success();
+                });
+            } catch (IOException | IllegalArgumentException error) {
+                mainHandler.post(() -> callback.error("默认内容暂时无法初始化，请重试"));
+            } finally {
+                // 只更新下次加载所用的缓存，不二次回调或打断当前播放状态。
+                catalog.refreshIfDue();
             }
         });
     }
@@ -718,6 +679,8 @@ public class ApiConfig {
     private void resetConfigData() {
         clearSpiderCache();
         currentPlaySourceKey = "";
+        mHomeSource = null;
+        mDefaultParse = null;
         sourceBeanList.clear();
         liveChannelGroupList.clear();
         parseBeanList.clear();
@@ -778,6 +741,7 @@ public class ApiConfig {
             sb.setTimeout(DefaultConfig.safeJsonInt(obj, "timeout", 0));
             sb.setClickSelector(DefaultConfig.safeJsonString(obj, "click", ""));
             sb.setStyle(DefaultConfig.safeJsonString(obj, "style", ""));
+            sb.setAuthorization(DefaultConfig.safeJsonString(obj, "authorization", "unknown"));
             if (firstSite == null) firstSite = sb;
             sourceBeanList.put(siteKey, sb);
         }
