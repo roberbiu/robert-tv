@@ -1,38 +1,57 @@
-<<<<<<<<<<<<<<json接口示例>>>>>>>>>>>>>
-# TVBox
+# Robert影视
 
-=== Source Code - Editing the app default settings ===
+面向电视遥控器的影视点播应用，基于 [TVBoxOS](https://github.com/q215613905/TVBoxOS) 改造。
 
-    //searchable:搜索开关	        0:关闭 1:启用
-    //filterable:首页可选	        0:否 1:是
-    //playerType:播放器类型	        0:系统 1:IJK 2:EXO
-    //采集接口类型		        0:xml 1:json 3:jar 4:remote
-    //parses解析类型		        0:嗅探,自带播放器 1:解析,返回直链
-    //直播参数说明                   ua:用户自定义ua epg:节目网址 logo:台标网址
-    
-    {
-	"spider": "./your.jar",
-	"wallpaper": "./api/img",
-	"sites": [],
-	"parses": [],
-	"hosts": [
-		"cache.ott.ystenlive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com",
-		"cache.ott.bestlive.itv.cmvideo.cn=ip"
-	],
-	"lives": [],
-	"rules": [],
-	"doh": [
-		{
-			"name": "騰訊",
-			"url": "https://doh.pub/dns-query"
-		},
-		{
-			"name": "阿里",
-			"url": "https://dns.alidns.com/dns-query"
-		},
-		{
-			"name": "360",
-			"url": "https://doh.360.cn/dns-query"
-		}
-	]
-    }
+**当前状态：开发中。** 需求和架构方案已于 2026-10-28 经用户确认，仓库已建立，固定上游的 Java 调试构建已通过。Robert影视改造、来源实播及雷鸟真机验收仍在进行；本仓库不是已验证可用的发行版。
+
+## 产品目标
+
+在雷鸟鹤 6 Ultra 上提供安装即可使用的单 APK。用户负责浏览、搜索和观看，不需要寻找或导入来源、填写接口和字幕凭据，也不需要部署 NAS、常开电脑或家庭服务。
+
+- 搜索电影、国产剧、美剧、综艺、动画、纪录片等点播内容。
+- 自动处理常见来源变化与失败，提供同片、同季集的可用替代版本。
+- 默认均衡选择，展示可确认的清晰度、中文字幕及授权要求，并允许切换。
+- 中文字幕优先；没有时尝试其他版本，最终仍没有则标注并允许播放。
+- 必要认证采用手机扫码，尽量保留有效会话；无需认证的内容不被登录阻断。
+- 直播仅在可低成本复用并验证稳定时纳入，不阻塞点播交付。
+
+这些是待实现和验证的目标，不是当前版本已具备全部能力的声明。内容覆盖、字幕与认证持续性受外部服务影响，不承诺全片库、永久可用或永久免登录。
+
+## 文档
+
+- [已确认需求与验收标准](docs/requirements.md)
+- [架构与来源更新边界](docs/architecture.md)
+- [开发、构建和交付计划](docs/development.md)
+- [协作约定](AGENTS.md)
+
+## 工程与上游
+
+| 项目 | 取值 |
+| --- | --- |
+| 项目与应用名称 | Robert影视 |
+| GitHub 仓库 | [roberbiu/robert-tv](https://github.com/roberbiu/robert-tv) |
+| 本地仓库 | C:/coding/myPro/robert-tv |
+| 固定上游 | q215613905/TVBoxOS |
+| 上游基线 | [ab11d289e09963a9daf65ca7f6b7a9a8cbe184e1](https://github.com/q215613905/TVBoxOS/commit/ab11d289e09963a9daf65ca7f6b7a9a8cbe184e1) |
+| 许可证 | [GNU AGPL v3](LICENSE) |
+
+保留上游历史、版权与许可声明。原始接口格式说明可查看[固定基线的 README](https://github.com/q215613905/TVBoxOS/blob/ab11d289e09963a9daf65ca7f6b7a9a8cbe184e1/README.md)。客户端许可不自动覆盖第三方来源脚本、JAR 或媒体内容；新增依赖与适配器需单独记录来源和许可。
+
+## 开发构建
+
+基线采用 Gradle Wrapper 7.5、Android Gradle Plugin 7.2.2、Android SDK 33，优先使用 JDK 17。先验证 Java flavor；它包含 ARM 32 位与 64 位库，关闭 ABI 分包。
+
+在 PowerShell 中运行：
+
+~~~powershell
+Set-Location -LiteralPath "C:/coding/myPro/robert-tv"
+& "./gradlew.bat" :app:assembleJavaDebug --stacktrace
+~~~
+
+发布构建目标为 :app:assembleJavaRelease，但必须先完成项目独立签名配置。不要使用上游公开测试密钥交付，不要用未签名包或 debug 构建冒充正式发布。
+
+不要直接使用 assembleRelease 作为首版构建命令：它会包含 Python 变体；上游 Python 模块具有机器相关路径和额外依赖。完整构建说明与验证状态见[开发文档](docs/development.md)。
+
+## 数据与交付
+
+签名密钥、密码、Cookie、token、带凭据的播放地址和个人观看记录不得进入公开仓库。发布包应附校验值、安装升级说明、已知限制及对应源码提交；雷鸟真机安装后的问题进入修复和再次交付流程。

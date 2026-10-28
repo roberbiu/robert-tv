@@ -98,6 +98,13 @@ lint/tmp/
 
 *.hprof
 *.md
+!README.md
+!AGENTS.md
+!docs/**/*.md
+.signing/
+*.jks
+*.keystore
+signing.properties
 .temp/
 output-metadata.json
 .py/

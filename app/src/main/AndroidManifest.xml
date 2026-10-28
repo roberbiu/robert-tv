@@ -21,7 +21,7 @@
 
     <application
         android:name=".base.App"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:banner="@drawable/app_banner"
         android:configChanges="orientation|keyboardHidden|screenSize"
         android:hardwareAccelerated="true"

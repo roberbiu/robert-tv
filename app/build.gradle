@@ -1,13 +1,25 @@
 apply plugin: 'com.android.application'
 
+def releaseProperties = new Properties()
+def releasePropertiesFile = rootProject.file('.signing/release.properties')
+if (releasePropertiesFile.exists()) {
+    releasePropertiesFile.withInputStream { releaseProperties.load(it) }
+}
+def hasReleaseSigning = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].every {
+    releaseProperties.getProperty(it)
+}
+if (!hasReleaseSigning && gradle.startParameter.taskNames.any { it.toLowerCase().contains('javarelease') }) {
+    throw new GradleException('发布构建需要本机 .signing/release.properties，禁止使用上游公开测试签名。')
+}
+
 android {
     compileSdkVersion 33
 
     defaultConfig {
-        applicationId 'com.github.tvbox.osc.jun'
+        applicationId 'io.github.roberbiu.roberttv'
         targetSdkVersion 28
         versionCode 1
-        versionName '1.0.0'
+        versionName project.findProperty('robertVersionName') ?: '0.1.0-dev'
         multiDexEnabled true
         //设置room的Schema的位置
         javaCompileOptions {
@@ -96,12 +108,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            robertRelease {
+                storeFile rootProject.file(releaseProperties.getProperty('storeFile'))
+                storePassword releaseProperties.getProperty('storePassword')
+                keyAlias releaseProperties.getProperty('keyAlias')
+                keyPassword releaseProperties.getProperty('keyPassword')
+            }
+        }
+    }
+
     buildTypes {
         debug {
             minifyEnabled false
         }
         release {
             minifyEnabled true
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.robertRelease
+            }
         }
     }
 
@@ -116,7 +142,7 @@ android {
         variant.outputs.configureEach { output ->
             def flavorNames = variant.productFlavors.collect { it.name }.join('-')
             // 构建自定义文件名
-            def fileName = "TVBox_${variant.buildType.name}-${flavorNames}.apk"
+            def fileName = "RobertTV_${variant.versionName}_${variant.buildType.name}-${flavorNames}.apk"
             outputFileName = fileName
         }
     }
@@ -142,6 +168,7 @@ repositories {
 
 }
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
     api fileTree(dir: "libs", include: ["*.jar","*.aar"])
 
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
