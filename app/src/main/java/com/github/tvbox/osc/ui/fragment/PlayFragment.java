@@ -42,6 +42,7 @@ import androidx.recyclerview.widget.DiffUtil;
 
 import com.github.catvod.crawler.Spider;
 import com.google.gson.JsonObject;
+import com.google.gson.Gson;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.api.DanmakuApi;
@@ -81,7 +82,9 @@ import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.PlayerHelper;
 import com.github.tvbox.osc.util.SubtitleHelper;
+import com.github.tvbox.osc.util.SubtitleTrial;
 import com.github.tvbox.osc.util.VideoParseRuler;
+import com.github.tvbox.osc.util.VersionPolicy;
 import com.github.tvbox.osc.util.XWalkUtils;
 import com.github.tvbox.osc.util.parser.SuperParse;
 import com.github.tvbox.osc.util.thunder.Jianpian;
@@ -163,6 +166,31 @@ public class PlayFragment extends BaseLazyFragment {
     private DanmuLoadController danmuLoadController;
     private final List<Cue> exoCues = new ArrayList<>();
     private boolean exoInternalSubtitle;
+    private String subtitleStatusKey = "";
+    private PlaybackSnapshot pendingSubtitleRestore;
+    private long subtitleConfirmGeneration = -1L;
+    private String subtitleConfirmUrl = "";
+
+    public static final class PlaybackSnapshot {
+        public final VodInfo info;
+        public final String sourceKey;
+        public final String progressKey;
+        public final String resolvedUrl;
+        public final HashMap<String, String> headers;
+        public final long position;
+        public final String subtitle;
+
+        private PlaybackSnapshot(VodInfo info, String sourceKey, String progressKey, String resolvedUrl,
+                                 HashMap<String, String> headers, long position, String subtitle) {
+            this.info = info;
+            this.sourceKey = sourceKey;
+            this.progressKey = progressKey;
+            this.resolvedUrl = resolvedUrl;
+            this.headers = headers;
+            this.position = position;
+            this.subtitle = subtitle;
+        }
+    }
 
     private final long videoDuration = -1;
 
@@ -306,6 +334,8 @@ public class PlayFragment extends BaseLazyFragment {
         mVideoView.addOnStateChangeListener(new VideoView.SimpleOnStateChangeListener() {
             @Override
             public void onPlayStateChanged(int playState) {
+                if (playState == VideoView.STATE_ERROR && rollbackSubtitleTrialIfNeeded()) return;
+                if (playState == VideoView.STATE_PLAYING || playState == VideoView.STATE_BUFFERED) notifySubtitleTrialStarted();
                 if (webPlayUrl != null && isStartedPlayState(playState)) {
                     markPlaybackStarted();
                     hideTipOnUiThread();
@@ -531,6 +561,10 @@ public class PlayFragment extends BaseLazyFragment {
     //设置字幕
     void setSubtitle(String path) {
         if (path != null && path .length() > 0) {
+            mController.mSubtitleView.clearSubtitleCache();
+            if (!TextUtils.isEmpty(subtitleCacheKey)) {
+                CacheManager.save(MD5.string2MD5(subtitleCacheKey + "-manual"), true);
+            }
             hideExoInternalSubtitle();
             // 设置字幕
             mController.mSubtitleView.setVisibility(View.GONE);
@@ -786,6 +820,7 @@ public class PlayFragment extends BaseLazyFragment {
             @Override
             public void click(TrackInfoBean value, int pos) {
                 try {
+                    CacheManager.delete(MD5.string2MD5(subtitleCacheKey + "-manual"), 0);
                     for (TrackInfoBean subtitle : bean) {
                         subtitle.selected = isSameTrack(subtitle, value);
                     }
@@ -927,6 +962,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     void errorWithRetry(String err, boolean finish) {
+        if (rollbackSubtitleTrialIfNeeded()) return;
         if (isPlaybackStarted()) {
             cancelPlayTimeout();
             hideTipOnUiThread();
@@ -1113,40 +1149,69 @@ public class PlayFragment extends BaseLazyFragment {
         mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
         mController.mSubtitleView.setPlaySubtitleCacheKey(subtitleCacheKey);
         String subtitlePathCache = (String)CacheManager.getCache(MD5.string2MD5(subtitleCacheKey));
-        if (subtitlePathCache != null && !subtitlePathCache.isEmpty()) {
+        boolean manualExternal = !TextUtils.isEmpty(subtitlePathCache)
+                && Boolean.TRUE.equals(CacheManager.getCache(MD5.string2MD5(subtitleCacheKey + "-manual")));
+        String sourceSubtitle = !TextUtils.isEmpty(playSubtitle) ? playSubtitle : subtitlePathCache;
+        VersionPolicy.SubtitleChoice subtitleChoice = VersionPolicy.chooseSubtitle(manualExternal,
+                hasChineseSubtitleTrack(trackInfo), !TextUtils.isEmpty(sourceSubtitle), mController.mSubtitleView.hasInternal);
+        if (subtitleChoice == VersionPolicy.SubtitleChoice.MANUAL_EXTERNAL
+                || subtitleChoice == VersionPolicy.SubtitleChoice.SOURCE_EXTERNAL) {
             hideExoInternalSubtitle();
-            mController.mSubtitleView.setSubtitlePath(subtitlePathCache);
-        } else {
-            if (playSubtitle != null && playSubtitle .length() > 0) {
-                hideExoInternalSubtitle();
-                mController.mSubtitleView.setSubtitlePath(playSubtitle);
-            } else {
-                if (mController.mSubtitleView.hasInternal) {
-                    if (mediaPlayer instanceof ExoPlayer) {
-                        ((ExoPlayer) mediaPlayer).setInternalSubtitleDelay(SubtitleHelper.getTimeDelay());
-                        exoInternalSubtitle = true;
-                        mController.mExoSubtitleView.setVisibility(View.VISIBLE);
-                        applyExoSubtitleSettings();
-                    } else if (mediaPlayer instanceof IjkMediaPlayer && trackInfo != null && trackInfo.getSubtitle().size() > 0) {
-                        mController.mSubtitleView.isInternal = true;
-                        List<TrackInfoBean> subtitleTrackList = trackInfo.getSubtitle();
-                        int selectedIndex = trackInfo.getSubtitleSelected(true);
-                        boolean hasMandarin = false;
-                        for (TrackInfoBean subtitleTrackInfoBean : subtitleTrackList) {
-                            if ("国语".equals(subtitleTrackInfoBean.language)) {
-                                hasMandarin = true;
-                                if (selectedIndex != subtitleTrackInfoBean.trackId) {
-                                    ((IjkMediaPlayer) mediaPlayer).setTrack(subtitleTrackInfoBean.trackId);
-                                    break;
-                                }
-                            }
-                        }
-                        if (!hasMandarin) {
-                            ((IjkMediaPlayer) mediaPlayer).setTrack(subtitleTrackList.get(0).trackId);
-                        }
+            mController.mSubtitleView.setSubtitlePath(manualExternal ? subtitlePathCache : sourceSubtitle);
+        } else if (mController.mSubtitleView.hasInternal) {
+            if (mediaPlayer instanceof ExoPlayer) {
+                ((ExoPlayer) mediaPlayer).setInternalSubtitleDelay(SubtitleHelper.getTimeDelay());
+                exoInternalSubtitle = true;
+                mController.mExoSubtitleView.setVisibility(View.VISIBLE);
+                applyExoSubtitleSettings();
+            } else if (mediaPlayer instanceof IjkMediaPlayer && trackInfo != null && !trackInfo.getSubtitle().isEmpty()) {
+                mController.mSubtitleView.isInternal = true;
+                List<TrackInfoBean> subtitleTrackList = trackInfo.getSubtitle();
+                int selectedIndex = trackInfo.getSubtitleSelected(true);
+                boolean hasChinese = false;
+                for (TrackInfoBean track : subtitleTrackList) {
+                    if (VersionPolicy.isChineseLanguage(track.language)) {
+                        hasChinese = true;
+                        if (selectedIndex != track.trackId) ((IjkMediaPlayer) mediaPlayer).setTrack(track.trackId);
+                        break;
                     }
                 }
+                if (!hasChinese) ((IjkMediaPlayer) mediaPlayer).setTrack(subtitleTrackList.get(0).trackId);
             }
+        }
+        updateChineseSubtitleStatus(subtitleChoice);
+    }
+
+    private boolean hasChineseSubtitleTrack(TrackInfo trackInfo) {
+        if (trackInfo != null) {
+            for (TrackInfoBean track : trackInfo.getSubtitle()) {
+                if (VersionPolicy.isChineseLanguage(track.language)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void updateChineseSubtitleStatus(VersionPolicy.SubtitleChoice choice) {
+        if (!isAdded() || mVodInfo == null || mController == null) return;
+        String status = choice == VersionPolicy.SubtitleChoice.MANUAL_EXTERNAL ? "手动外挂字幕，语言待确认"
+                : choice == VersionPolicy.SubtitleChoice.INTERNAL_CHINESE ? "已检测到中文字幕"
+                : VersionPolicy.claimsChineseSubtitle(mVodInfo.name, mVodInfo.note) ? "来源标注中文"
+                : choice == VersionPolicy.SubtitleChoice.SOURCE_EXTERNAL ? "外挂字幕待确认" : "中文字幕待确认";
+        VodInfo.VodSeries episode = getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex);
+        mController.setTitle(mVodInfo.name + (episode == null ? "" : " " + episode.name) + " · " + status);
+        if (choice == VersionPolicy.SubtitleChoice.INTERNAL_CHINESE || choice == VersionPolicy.SubtitleChoice.MANUAL_EXTERNAL
+                || VersionPolicy.claimsChineseSubtitle(mVodInfo.name, mVodInfo.note)
+                || TextUtils.equals(subtitleStatusKey, progressKey)) return;
+        subtitleStatusKey = progressKey;
+        Activity activity = getActivity();
+        if (activity instanceof DetailActivity && ((DetailActivity) activity)
+                .findChineseSubtitleAlternative(episode == null ? "" : episode.name)) {
+            Toast.makeText(mContext, "正在查找有中文标注的其他版本，当前播放继续", Toast.LENGTH_LONG).show();
+        } else {
+            // 未发现字幕轨不代表画面没有硬字幕，保留未知状态并允许继续观看。
+            Toast.makeText(mContext, "中文字幕待确认，可继续观看或手动选择字幕", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -1362,6 +1427,88 @@ public class PlayFragment extends BaseLazyFragment {
         initPlayerCfg();
         triedLineFlags.clear();
         play(false);
+    }
+
+    public String getCurrentPlaybackIdentity() {
+        VodInfo.VodSeries episode = mVodInfo == null ? null : getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex);
+        return mVodInfo == null ? "" : VersionPolicy.playbackIdentity(sourceKey, mVodInfo.id,
+                mVodInfo.playFlag, episode == null ? "" : episode.name);
+    }
+
+    public PlaybackSnapshot capturePlaybackSnapshot() {
+        if (mVodInfo == null || TextUtils.isEmpty(webPlayUrl) || TextUtils.isEmpty(progressKey) || !isPlaybackStarted()) {
+            return null;
+        }
+        Gson gson = new Gson();
+        VodInfo frozenInfo = gson.fromJson(gson.toJson(mVodInfo), VodInfo.class);
+        long position = SubtitleTrial.snapshotPosition(mVideoView == null ? -1 : mVideoView.getCurrentPosition(),
+                getSavedProgress(progressKey));
+        return new PlaybackSnapshot(frozenInfo, sourceKey, progressKey, webPlayUrl,
+                webHeaderMap == null ? null : new HashMap<>(webHeaderMap), position, playSubtitle);
+    }
+
+    public void restorePlaybackSnapshot(PlaybackSnapshot snapshot) {
+        if (snapshot == null || !isAdded()) return;
+        if (sourceViewModel != null) sourceViewModel.cancelPlayRequest();
+        stopParse();
+        cancelPlayTimeout();
+        mVodInfo = snapshot.info;
+        sourceKey = snapshot.sourceKey;
+        sourceBean = ApiConfig.get().getSource(sourceKey);
+        App.getInstance().setVodInfo(mVodInfo);
+        ApiConfig.get().setCurrentPlaySourceKey(sourceKey);
+        initPlayerCfg();
+        triedLineFlags.clear();
+        autoRetryCount = 0;
+        pendingSubtitleRestore = snapshot;
+        subtitleStatusKey = snapshot.progressKey;
+        CacheManager.save(MD5.string2MD5(snapshot.progressKey), snapshot.position);
+        play(false);
+    }
+
+    private boolean rollbackSubtitleTrialIfNeeded() {
+        Activity activity = getActivity();
+        return activity instanceof DetailActivity
+                && ((DetailActivity) activity).rollbackSubtitleTrial(getCurrentPlaybackIdentity());
+    }
+
+    private void notifySubtitleTrialStarted() {
+        Activity activity = getActivity();
+        if (!(activity instanceof DetailActivity) || TextUtils.isEmpty(webPlayUrl)) return;
+        DetailActivity detail = (DetailActivity) activity;
+        String identity = getCurrentPlaybackIdentity();
+        String playingUrl = webPlayUrl;
+        long generation = detail.subtitleTrialGeneration(identity);
+        if (generation < 0 || (subtitleConfirmGeneration == generation && TextUtils.equals(subtitleConfirmUrl, playingUrl))) return;
+        subtitleConfirmGeneration = generation;
+        subtitleConfirmUrl = playingUrl;
+        checkSubtitleTrialStarted(detail, identity, playingUrl, generation, 13);
+    }
+
+    private void checkSubtitleTrialStarted(DetailActivity detail, String identity, String playingUrl,
+                                           long generation, int remainingChecks) {
+        // 元数据、prepared 甚至迟到的旧回调均不足以提交试播；须有当前 URL 的实际播放进度。
+        mHandler.postDelayed(() -> {
+            if (!isAdded() || subtitleConfirmGeneration != generation || !TextUtils.equals(subtitleConfirmUrl, playingUrl)
+                    || !TextUtils.equals(identity, getCurrentPlaybackIdentity()) || !TextUtils.equals(playingUrl, webPlayUrl)
+                    || !detail.isCurrentSubtitleTrial(generation, identity)) {
+                clearSubtitleConfirmation(generation, playingUrl);
+                return;
+            }
+            if (mVideoView != null && mVideoView.isPlaying() && hasPlaybackProgress(mVideoView.getCurrentPosition())) {
+                detail.confirmSubtitleTrialStarted(identity, generation);
+                clearSubtitleConfirmation(generation, playingUrl);
+            } else if (remainingChecks > 1) {
+                checkSubtitleTrialStarted(detail, identity, playingUrl, generation, remainingChecks - 1);
+            } else clearSubtitleConfirmation(generation, playingUrl);
+        }, 1500L);
+    }
+
+    private void clearSubtitleConfirmation(long generation, String url) {
+        if (subtitleConfirmGeneration == generation && TextUtils.equals(subtitleConfirmUrl, url)) {
+            subtitleConfirmGeneration = -1L;
+            subtitleConfirmUrl = "";
+        }
     }
 
     private void initData() {
@@ -1681,6 +1828,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     boolean autoRetry() {
+        if (rollbackSubtitleTrialIfNeeded()) return true;
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastRetryTime > 60_000){
             LOG.i("echo-reset-autoRetryCount");
@@ -1718,6 +1866,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     boolean tryNextLineIfEnabled() {
+        if (rollbackSubtitleTrialIfNeeded()) return true;
         restoreAutoSwitchedPlayer();
         if (allowAutoSwitchLine && Hawk.get(HawkConfig.AUTO_SWITCH_LINE, true)) return tryNextLine();
         LOG.i("echo-autoRetry line switching disabled");
@@ -1751,8 +1900,10 @@ public class PlayFragment extends BaseLazyFragment {
             String flag = lineFlags.get(i);
             List<VodInfo.VodSeries> seriesList = mVodInfo.seriesMap.get(flag);
             if (!triedLineFlags.contains(flag) && seriesList != null && !seriesList.isEmpty()) {
+                int matchingIndex = findSameEpisodeIndex(currentSeries, seriesList);
+                if (matchingIndex < 0) continue;
                 nextFlag = flag;
-                nextIndex = findSameEpisodeIndex(currentSeries, seriesList, currentIndex);
+                nextIndex = matchingIndex;
                 break;
             }
         }
@@ -1783,8 +1934,12 @@ public class PlayFragment extends BaseLazyFragment {
         autoRetryCount = 0;
         allowSwitchPlayer = true;
         hasAutoSwitchedPlayer = false;
-        inheritProgressKey = preProgressKey;
-        inheritProgress = preProgress;
+        VodInfo.VodSeries nextSeries = getCurrentSeries(flagToSwitch, nextIndex);
+        boolean sameMedia = currentSeries != null && nextSeries != null
+                && TextUtils.equals(currentSeries.url, nextSeries.url);
+        // 不同播放地址的剪辑时间线无法确认，保留目标版本自身历史，不盲目复制时间点。
+        inheritProgressKey = sameMedia ? preProgressKey : null;
+        inheritProgress = sameMedia ? preProgress : 0;
         reusePlayerOnSwitch = true;
         play(false);
         return true;
@@ -1842,22 +1997,18 @@ public class PlayFragment extends BaseLazyFragment {
         return currentList.get(safeIndex);
     }
 
-    private int findSameEpisodeIndex(VodInfo.VodSeries currentSeries, List<VodInfo.VodSeries> targetList, int fallbackIndex) {
+    private int findSameEpisodeIndex(VodInfo.VodSeries currentSeries, List<VodInfo.VodSeries> targetList) {
         if (targetList == null || targetList.isEmpty()) {
-            return 0;
-        }
-        if (targetList.size() == 1) {
-            return 0;
+            return -1;
         }
         if (currentSeries == null || TextUtils.isEmpty(currentSeries.name)) {
-            return Math.max(0, Math.min(fallbackIndex, targetList.size() - 1));
+            return -1;
         }
-        int currentEpisode = extractEpisodeNumber(currentSeries.name);
         int matchedIndex = -1;
         int bestScore = 0;
         for (int i = 0; i < targetList.size(); i++) {
             VodInfo.VodSeries targetSeries = targetList.get(i);
-            int score = getEpisodeMatchScore(currentSeries.name, currentEpisode, targetSeries == null ? null : targetSeries.name);
+            int score = getEpisodeMatchScore(currentSeries.name, targetSeries == null ? null : targetSeries.name);
             if (score > bestScore) {
                 bestScore = score;
                 matchedIndex = i;
@@ -1866,49 +2017,12 @@ public class PlayFragment extends BaseLazyFragment {
         if (matchedIndex >= 0) {
             return matchedIndex;
         }
-        return Math.max(0, Math.min(fallbackIndex, targetList.size() - 1));
-    }
-
-    private int getEpisodeMatchScore(String currentName, int currentEpisode, String targetName) {
-        if (TextUtils.isEmpty(currentName) || TextUtils.isEmpty(targetName)) {
-            return 0;
-        }
-        if (targetName.equalsIgnoreCase(currentName)) {
-            return 100;
-        }
-        if (currentEpisode >= 0 && extractEpisodeNumber(targetName) == currentEpisode) {
-            return 80;
-        }
-        String currentLower = currentName.toLowerCase(Locale.ROOT);
-        String targetLower = targetName.toLowerCase(Locale.ROOT);
-        if (currentEpisode < 0 && currentName.length() >= 2 && targetLower.contains(currentLower)) {
-            return 70;
-        }
-        if (currentEpisode < 0 && targetName.length() >= 2 && currentLower.contains(targetLower)) {
-            return 60;
-        }
-        return 0;
-    }
-
-    private int extractEpisodeNumber(String name) {
-        if (TextUtils.isEmpty(name)) {
-            return -1;
-        }
-        try {
-            String text = name.replaceAll("\\[.*?\\]|\\(.*?\\)", "");
-            text = text.replaceAll("\\b(19|20)\\d{2}\\b", "");
-            text = text.toLowerCase(Locale.ROOT).replaceAll("2160p|1080p|720p|480p|4k|h26[45]|x26[45]|mp4", "");
-            Matcher matcher = Pattern.compile("(?i)(?:ep|\\u7b2c|e|[\\-\\.\\s])\\s?(\\d{1,4})").matcher(text);
-            if (matcher.find()) {
-                return Integer.parseInt(matcher.group(1));
-            }
-            String number = text.replaceAll("\\D+", "");
-            if (!TextUtils.isEmpty(number)) {
-                return Integer.parseInt(number);
-            }
-        } catch (Exception ignored) {
-        }
         return -1;
+    }
+
+    private int getEpisodeMatchScore(String currentName, String targetName) {
+        if (!VersionPolicy.sameEpisode(currentName, targetName)) return 0;
+        return VersionPolicy.normalizeTitle(currentName).equals(VersionPolicy.normalizeTitle(targetName)) ? 100 : 80;
     }
 
     void autoRetryFromLoadFoundVideoUrls() {
@@ -1938,6 +2052,12 @@ public class PlayFragment extends BaseLazyFragment {
 
     public void play(boolean reset) {
         if(mVodInfo==null)return;
+        Activity activity = getActivity();
+        if (activity instanceof DetailActivity) {
+            ((DetailActivity) activity).onSubtitlePlaybackTargetChanged(getCurrentPlaybackIdentity());
+        }
+        subtitleConfirmGeneration = -1L;
+        subtitleConfirmUrl = "";
         boolean reusePlayer = reusePlayerOnSwitch && !releasePlayerOnSwitch;
         reusePlayerOnSwitch = false;
         releasePlayerOnSwitch = false;
@@ -1991,6 +2111,7 @@ public class PlayFragment extends BaseLazyFragment {
         if (reset) {
             CacheManager.delete(MD5.string2MD5(progressKey), 0);
             CacheManager.delete(MD5.string2MD5(subtitleCacheKey), 0);
+            CacheManager.delete(MD5.string2MD5(subtitleCacheKey + "-manual"), 0);
         }else{
             inheritProgressIfNeeded();
             try{
@@ -2003,6 +2124,16 @@ public class PlayFragment extends BaseLazyFragment {
             }catch (JSONException e) {
                 e.printStackTrace();
             }
+        }
+
+        PlaybackSnapshot restoring = pendingSubtitleRestore;
+        pendingSubtitleRestore = null;
+        if (restoring != null && !TextUtils.isEmpty(restoring.resolvedUrl)) {
+            playSubtitle = restoring.subtitle;
+            webHeaderMap = restoring.headers == null ? null : new HashMap<>(restoring.headers);
+            // 试播失败直接恢复原解析 URL 和该版本进度，不再依赖重新解析能否成功。
+            goPlayUrl(restoring.resolvedUrl, webHeaderMap);
+            return;
         }
 
         if(Jianpian.isJpUrl(vs.url)){//荐片地址特殊判断
@@ -2268,6 +2399,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     void handleResolvePlayUrlTimeout() {
+        if (rollbackSubtitleTrialIfNeeded()) return;
         LOG.i("echo-resolvePlayUrl timeout, try next line");
         if (sourceViewModel != null) sourceViewModel.cancelPlayRequest();
         stopParse();
@@ -2278,6 +2410,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     void handleResolvePlayUrlFailed(String err) {
+        if (rollbackSubtitleTrialIfNeeded()) return;
         LOG.i("echo-resolvePlayUrl failed, try next line: " + err);
         if (sourceViewModel != null) sourceViewModel.cancelPlayRequest();
         stopParse();
@@ -2288,6 +2421,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     void handleSwitchLinePlayTimeout() {
+        if (rollbackSubtitleTrialIfNeeded()) return;
         int state = mVideoView == null ? -1 : mVideoView.getCurrentPlayState();
         LOG.i("echo-switchLinePlay timeout state: " + state + ", started: " + playbackStarted);
         if (isPlaybackStarted()) {

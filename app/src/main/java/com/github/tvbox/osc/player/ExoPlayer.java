@@ -6,6 +6,7 @@ import android.util.Pair;
 
 import com.github.tvbox.osc.util.AudioTrackMemory;
 import com.github.tvbox.osc.util.LOG;
+import com.github.tvbox.osc.util.VersionPolicy;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLoadControl;
 import com.google.android.exoplayer2.DefaultRenderersFactory;
@@ -217,7 +218,7 @@ public class ExoPlayer extends ExoMediaPlayer {
         defaultSubtitleTrackSelected = true;
         TrackInfoBean target = subtitles.get(0);
         for (TrackInfoBean subtitle : subtitles) {
-            if ("国语".equals(subtitle.language)) {
+            if (VersionPolicy.isChineseLanguage(subtitle.language)) {
                 target = subtitle;
                 break;
             }

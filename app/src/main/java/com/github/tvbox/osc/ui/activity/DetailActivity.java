@@ -54,6 +54,8 @@ import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.SearchHelper;
 import com.github.tvbox.osc.util.SubtitleHelper;
+import com.github.tvbox.osc.util.SubtitleTrial;
+import com.github.tvbox.osc.util.VersionPolicy;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
 import com.lzy.okgo.OkGo;
 import com.orhanobut.hawk.Hawk;
@@ -194,6 +196,7 @@ public class DetailActivity extends BaseActivity {
         tvActor = findViewById(R.id.tvActor);
         tvDirector = findViewById(R.id.tvDirector);
         tvPlayUrl = findViewById(R.id.tvPlayUrl);
+        tvPlayUrl.setVisibility(View.GONE);
         tvDes = findViewById(R.id.tvDes);
         tvPlay = findViewById(R.id.tvPlay);
 //        tvSort = findViewById(R.id.tvSort);
@@ -667,6 +670,11 @@ public class DetailActivity extends BaseActivity {
         previewVodInfo.name = vodInfo.name;
         previewVodInfo.pic = vodInfo.pic;
         previewVodInfo.sourceKey = vodInfo.sourceKey;
+        previewVodInfo.year = vodInfo.year;
+        previewVodInfo.note = vodInfo.note;
+        previewVodInfo.lang = vodInfo.lang;
+        previewVodInfo.type = vodInfo.type;
+        previewVodInfo.area = vodInfo.area;
         previewVodInfo.playNote = vodInfo.playNote;
         previewVodInfo.seriesFlags = vodInfo.seriesFlags;
         previewVodInfo.seriesMap = vodInfo.seriesMap;
@@ -797,6 +805,11 @@ public class DetailActivity extends BaseActivity {
     }
 
     private void setTextShow(TextView view, String tag, String info) {
+        if (view == tvPlayUrl) {
+            view.setText(Html.fromHtml(getHtml(tag, info)));
+            view.setVisibility(View.GONE);
+            return;
+        }
         if (info == null || info.trim().isEmpty()) {
             view.setVisibility(View.GONE);
             return;
@@ -854,6 +867,7 @@ public class DetailActivity extends BaseActivity {
         sourceViewModel.detailResult.observe(this, new Observer<AbsXml>() {
             @Override
             public void onChanged(AbsXml absXml) {
+                if (!sourceViewModel.isCurrentDetailResult(absXml)) return;
                 if (detailFallbackActive && !detailFallbackLoadingCandidate) {
                     return;
                 }
@@ -868,10 +882,25 @@ public class DetailActivity extends BaseActivity {
                         detailFallbackLoadingCandidate = false;
                         llLayout.removeCallbacks(detailFallbackDetailTimeout);
                     }
+                    Movie.Video candidate = absXml.movie.videoList.get(0);
+                    if (fallbackResult && (!isEligibleFallback(candidate) || !hasMatchingFallbackEpisode(candidate))) {
+                        // 搜索摘要与详情可能不一致，替换当前影片前再次核验身份和集数。
+                        loadNextDetailFallbackSource();
+                        return;
+                    }
+                    SubtitleFallbackSnapshot subtitleSnapshot = null;
+                    if (fallbackResult && detailFallbackChineseOnly) {
+                        subtitleSnapshot = captureSubtitleTrialSnapshot();
+                        if (subtitleSnapshot == null) {
+                            finishDetailFallbackWithoutResult();
+                            return;
+                        }
+                    }
                     if (fallbackResult) {
                         SourceBean fallbackSource = ApiConfig.get().getSource(sourceKey);
                         String fallbackName = fallbackSource == null ? sourceKey : fallbackSource.getName();
-                        Toast.makeText(DetailActivity.this, "站点切换至" + fallbackName, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(DetailActivity.this, (detailFallbackChineseOnly ? "正在试播中文版本：" : "站点切换至")
+                                + fallbackName, Toast.LENGTH_SHORT).show();
                     }
                     showSuccess();
                     if(!TextUtils.isEmpty(absXml.msg) && !absXml.msg.equals("数据列表")){
@@ -880,7 +909,7 @@ public class DetailActivity extends BaseActivity {
                         showEmpty();
                         return;
                     }
-                    mVideo = absXml.movie.videoList.get(0);
+                    mVideo = candidate;
                     mVideo.id = vodId;
                     if (TextUtils.isEmpty(mVideo.name))mVideo.name = vod_name;
                     if (TextUtils.isEmpty(mVideo.name))mVideo.name = "TVBox";
@@ -898,7 +927,8 @@ public class DetailActivity extends BaseActivity {
                     if (displaySource == null) {
                         displaySource = ApiConfig.get().getSource(sourceKey);
                     }
-                    setTextShow(tvSite, "来源：", displaySource == null ? "" : displaySource.getName());
+                    setTextShow(tvSite, "来源：", displaySource == null ? "" : displaySource.getName()
+                            + " · " + VersionPolicy.authorizationLabel(displaySource.getAuthorization()));
                     setTextShow(tvYear, "年份：", mVideo.year == 0 ? "" : String.valueOf(mVideo.year));
                     setTextShow(tvArea, "地区：", mVideo.area);
                     setTextShow(tvLang, "语言：", mVideo.lang);
@@ -944,6 +974,16 @@ public class DetailActivity extends BaseActivity {
                             vodInfo.playFlag = (String) vodInfo.seriesMap.keySet().toArray()[0];
 
                         restoreDetailFallbackEpisode();
+                        if (subtitleSnapshot != null) {
+                            VodInfo.VodSeries targetEpisode = vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex);
+                            String trialIdentity = VersionPolicy.playbackIdentity(sourceKey, vodInfo.id,
+                                    vodInfo.playFlag, targetEpisode.name);
+                            if (subtitleTrial.begin(subtitleSnapshot, trialIdentity)) {
+                                long generation = subtitleTrial.generation();
+                                subtitleTrialTimeout = () -> rollbackSubtitleTrial(trialIdentity, generation);
+                                llLayout.postDelayed(subtitleTrialTimeout, 20000L);
+                            }
+                        }
                         resetDetailFallback();
                         List<VodInfo.VodSeries> playingSeriesList = vodInfo.seriesMap.get(vodInfo.playFlag);
                         vodInfo.playIndex = Math.max(0, Math.min(vodInfo.playIndex, playingSeriesList.size() - 1));
@@ -963,7 +1003,7 @@ public class DetailActivity extends BaseActivity {
                         mGridViewFlag.scrollToPosition(flagScrollTo);
 
                         refreshList();
-                        if (showPreview) {
+                        if (showPreview || subtitleTrial.isPending()) {
                             jumpToPlay();
                             llPlayerFragmentContainer.setVisibility(View.VISIBLE);
                             llPlayerFragmentContainerBlock.setVisibility(View.VISIBLE);
@@ -1012,6 +1052,7 @@ public class DetailActivity extends BaseActivity {
         if (intent != null && intent.getExtras() != null) {
             Bundle bundle = intent.getExtras();
             vod_name=bundle.getString("title", "");
+            requestedYear = bundle.getInt("year", 0);
             vod_picture=bundle.getString("picture", "");
             fromCollect = bundle.getBoolean("collect", false);
             Object fallbackCandidates = bundle.getSerializable(EXTRA_DETAIL_FALLBACK_CANDIDATES);
@@ -1028,6 +1069,7 @@ public class DetailActivity extends BaseActivity {
 
     private void loadDetail(String vid, String key, boolean fallback) {
         if (!fallback) {
+            cancelSubtitleTrial();
             resetDetailFallback();
         }
         vodId = vid;
@@ -1079,7 +1121,173 @@ public class DetailActivity extends BaseActivity {
         return startDetailFallback(false);
     }
 
+    /** 仅寻找有中文标注的同片版本；每部影片的同一集最多自动尝试一轮。 */
+    public boolean findChineseSubtitleAlternative(String episodeName) {
+        if (!subtitleTrialForeground || mVideo == null || detailFallbackActive || subtitleTrial.isPending()
+                || VersionPolicy.claimsChineseSubtitle(mVideo.name, mVideo.note)) {
+            return false;
+        }
+        String attemptKey = VersionPolicy.workEpisodeIdentity(mVideo.name, mVideo.year, episodeName);
+        if (!subtitleAlternativeAttempts.add(attemptKey)) return false;
+        detailFallbackChineseOnly = true;
+        if (startDetailFallback(false)) return true;
+        detailFallbackChineseOnly = false;
+        return false;
+    }
+
+    private SubtitleFallbackSnapshot captureSubtitleTrialSnapshot() {
+        PlayFragment.PlaybackSnapshot playback = playFragment == null ? null : playFragment.capturePlaybackSnapshot();
+        if (playback == null || !TextUtils.equals(playback.sourceKey, fallbackOriginalSource)
+                || playback.info.seriesMap == null) return null;
+        List<VodInfo.VodSeries> episodes = playback.info.seriesMap.get(playback.info.playFlag);
+        if (episodes == null || playback.info.playIndex < 0 || playback.info.playIndex >= episodes.size()) return null;
+        if (detailFallbackEpisode != null
+                && !VersionPolicy.sameEpisode(detailFallbackEpisode.name, episodes.get(playback.info.playIndex).name)) return null;
+        return new SubtitleFallbackSnapshot(mVideo, playback, fallbackOriginalId, fallbackOriginalFirstSource,
+                fallbackOriginalTitle, fallbackOriginalPicture);
+    }
+
+    public long subtitleTrialGeneration(String playbackIdentity) {
+        return isCurrentSubtitleTrial(subtitleTrial.generation(), playbackIdentity) ? subtitleTrial.generation() : -1L;
+    }
+
+    public boolean isCurrentSubtitleTrial(long generation, String playbackIdentity) {
+        return subtitleTrialForeground && playFragment != null
+                && TextUtils.equals(playbackIdentity, playFragment.getCurrentPlaybackIdentity())
+                && subtitleTrial.isCurrent(generation, playbackIdentity);
+    }
+
+    public void confirmSubtitleTrialStarted(String playbackIdentity, long generation) {
+        if (isCurrentSubtitleTrial(generation, playbackIdentity)
+                && subtitleTrial.confirmStarted(playbackIdentity, generation)) clearSubtitleTrialTimeout();
+    }
+
+    public void onSubtitlePlaybackTargetChanged(String playbackIdentity) {
+        boolean invalidated = subtitleTrial.invalidateForPlayback(playbackIdentity);
+        boolean queuedRestoreChanged = !TextUtils.isEmpty(subtitleRollbackPendingKey)
+                && !TextUtils.equals(subtitleRollbackPendingKey, playbackIdentity);
+        boolean searchingTargetChanged = detailFallbackChineseOnly && !TextUtils.isEmpty(detailFallbackOriginPlaybackIdentity)
+                && !TextUtils.equals(detailFallbackOriginPlaybackIdentity, playbackIdentity);
+        if (invalidated && sourceViewModel != null) sourceViewModel.cancelDetailRequest();
+        if (invalidated || queuedRestoreChanged || searchingTargetChanged) cancelSubtitleTrial();
+    }
+
+    public boolean rollbackSubtitleTrial(String playbackIdentity) {
+        return rollbackSubtitleTrial(playbackIdentity, subtitleTrial.generation());
+    }
+
+    private boolean rollbackSubtitleTrial(String playbackIdentity, long generation) {
+        if (!subtitleTrialForeground || llLayout == null || playFragment == null
+                || !TextUtils.equals(playbackIdentity, playFragment.getCurrentPlaybackIdentity())) return false;
+        if (!TextUtils.isEmpty(subtitleRollbackPendingKey) && TextUtils.equals(subtitleRollbackPendingKey, playbackIdentity)
+                && subtitleTrial.isGenerationCurrent(subtitleRollbackPendingGeneration)) return true;
+        SubtitleFallbackSnapshot snapshot = subtitleTrial.rollback(playbackIdentity, generation);
+        if (snapshot == null) return false;
+        clearSubtitleTrialTimeout();
+        subtitleRollbackPendingKey = playbackIdentity;
+        long restoreGeneration = subtitleTrial.generation();
+        subtitleRollbackPendingGeneration = restoreGeneration;
+        // 延至当前错误回调结束后恢复，防止同一播放器的其他错误监听器再次发起换源。
+        llLayout.post(() -> {
+            if (subtitleTrialForeground && !isFinishing() && !isDestroyed()
+                    && subtitleTrial.isGenerationCurrent(restoreGeneration) && playFragment != null
+                    && TextUtils.equals(playbackIdentity, playFragment.getCurrentPlaybackIdentity())) {
+                restoreSubtitleOriginal(snapshot);
+            }
+            if (subtitleRollbackPendingGeneration == restoreGeneration) subtitleRollbackPendingKey = "";
+        });
+        return true;
+    }
+
+    private void cancelSubtitleTrial() {
+        boolean hadPendingDetail = subtitleTrial.isPending() || !TextUtils.isEmpty(subtitleRollbackPendingKey)
+                || detailFallbackChineseOnly;
+        if (hadPendingDetail && sourceViewModel != null) sourceViewModel.cancelDetailRequest();
+        subtitleTrial.clear();
+        clearSubtitleTrialTimeout();
+        subtitleRollbackPendingKey = "";
+        subtitleRollbackPendingGeneration = -1L;
+        if (detailFallbackChineseOnly) {
+            if (detailFallbackKeepCurrentDetail) {
+                sourceKey = fallbackOriginalSource;
+                vodId = fallbackOriginalId;
+                firstsourceKey = fallbackOriginalFirstSource;
+                vod_name = fallbackOriginalTitle;
+                vod_picture = fallbackOriginalPicture;
+            }
+            resetDetailFallback();
+        }
+    }
+
+    private void clearSubtitleTrialTimeout() {
+        if (subtitleTrialTimeout != null && llLayout != null) llLayout.removeCallbacks(subtitleTrialTimeout);
+        subtitleTrialTimeout = null;
+    }
+
+    private void restoreSubtitleOriginal(SubtitleFallbackSnapshot snapshot) {
+        if (sourceViewModel != null) sourceViewModel.cancelDetailRequest();
+        resetDetailFallback();
+        mVideo = snapshot.video;
+        vodInfo = snapshot.playback.info;
+        sourceKey = snapshot.playback.sourceKey;
+        vodId = snapshot.id;
+        firstsourceKey = snapshot.firstSource;
+        vod_name = snapshot.title;
+        vod_picture = snapshot.picture;
+        previewVodInfo = null;
+        SourceBean source = ApiConfig.get().getSource(sourceKey);
+        tvName.setText(mVideo.name);
+        setTextShow(tvSite, "来源：", source == null ? "" : source.getName() + " · "
+                + VersionPolicy.authorizationLabel(source.getAuthorization()));
+        setTextShow(tvYear, "年份：", mVideo.year > 0 ? String.valueOf(mVideo.year) : "");
+        setTextShow(tvArea, "地区：", mVideo.area);
+        setTextShow(tvLang, "语言：", mVideo.lang);
+        setTextShow(tvType, "类型：", mVideo.type);
+        setTextShow(tvActor, "演员：", removeHtmlTag(mVideo.actor));
+        setTextShow(tvDirector, "导演：", removeHtmlTag(mVideo.director));
+        setTextShow(tvDes, "内容简介：", removeHtmlTag(mVideo.des));
+        if (!TextUtils.isEmpty(mVideo.pic)) {
+            com.github.tvbox.osc.util.ImgUtil.load(DefaultConfig.checkReplaceProxy(mVideo.pic), ivThumb,
+                    AutoSizeUtils.mm2px(mContext, 10), AutoSizeUtils.mm2px(mContext, 300), AutoSizeUtils.mm2px(mContext, 400), mVideo.name);
+        }
+        if (vodInfo.seriesFlags == null) {
+            vodInfo.seriesFlags = new ArrayList<>();
+            for (String flag : vodInfo.seriesMap.keySet()) vodInfo.seriesFlags.add(new VodInfo.VodSeriesFlag(flag));
+        }
+        for (VodInfo.VodSeriesFlag flag : vodInfo.seriesFlags) flag.selected = TextUtils.equals(flag.name, vodInfo.playFlag);
+        seriesFlagAdapter.setNewData(vodInfo.seriesFlags);
+        List<VodInfo.VodSeries> episodes = vodInfo.seriesMap.get(vodInfo.playFlag);
+        setTextShow(tvPlayUrl, "播放地址：", episodes.get(vodInfo.playIndex).url);
+        tvCollect.setText(RoomDataManger.isVodCollect(sourceKey, vodId) ? "取消收藏" : "加入收藏");
+        refreshList();
+        showSuccess();
+        insertVod(firstsourceKey, vodInfo);
+        ensurePlayFragment();
+        playFragment.restorePlaybackSnapshot(snapshot.playback);
+        Toast.makeText(this, "中文版本试播失败，已恢复原版本和播放进度", Toast.LENGTH_LONG).show();
+    }
+
+    private static final class SubtitleFallbackSnapshot {
+        final Movie.Video video;
+        final PlayFragment.PlaybackSnapshot playback;
+        final String id;
+        final String firstSource;
+        final String title;
+        final String picture;
+
+        SubtitleFallbackSnapshot(Movie.Video video, PlayFragment.PlaybackSnapshot playback, String id,
+                                 String firstSource, String title, String picture) {
+            this.video = video;
+            this.playback = playback;
+            this.id = id;
+            this.firstSource = firstSource;
+            this.title = title;
+            this.picture = picture;
+        }
+    }
+
     private void startDetailFallbackFromMenu() {
+        cancelSubtitleTrial();
         if (!startDetailFallback(true)) {
             Toast.makeText(this, "暂无可切换的片源", Toast.LENGTH_SHORT).show();
         }
@@ -1105,6 +1313,7 @@ public class DetailActivity extends BaseActivity {
         }
         detailFallbackExcludedSourceKey = sourceKey;
         detailFallbackTitle = vod_name.trim();
+        captureFallbackIdentity();
         addDetailFallbackUsedSource(sourceKey);
         if (loadDetailFallbackCache()) {
             return true;
@@ -1120,6 +1329,7 @@ public class DetailActivity extends BaseActivity {
             showDetailEmpty();
             return;
         }
+        captureFallbackIdentity();
 
         for (SourceBean bean : ApiConfig.get().getSourceBeanList()) {
             if (bean.isSearchable() && bean.isChangeable() && !TextUtils.equals(bean.getKey(), detailFallbackExcludedSourceKey) && !isDetailFallbackSourceUsed(bean.getKey())) {
@@ -1151,15 +1361,48 @@ public class DetailActivity extends BaseActivity {
     private void captureDetailFallbackEpisode() {
         detailFallbackEpisode = null;
         detailFallbackEpisodeIndex = -1;
-        if (vodInfo == null || vodInfo.seriesMap == null || TextUtils.isEmpty(vodInfo.playFlag)) {
+        PlayFragment.PlaybackSnapshot playback = playFragment == null ? null : playFragment.capturePlaybackSnapshot();
+        VodInfo active = playback == null ? vodInfo : playback.info;
+        if (active == null || active.seriesMap == null || TextUtils.isEmpty(active.playFlag)) {
             return;
         }
-        List<VodInfo.VodSeries> seriesList = vodInfo.seriesMap.get(vodInfo.playFlag);
+        List<VodInfo.VodSeries> seriesList = active.seriesMap.get(active.playFlag);
         if (seriesList == null || seriesList.isEmpty()) {
             return;
         }
-        detailFallbackEpisodeIndex = Math.max(0, Math.min(vodInfo.playIndex, seriesList.size() - 1));
+        detailFallbackEpisodeIndex = Math.max(0, Math.min(active.playIndex, seriesList.size() - 1));
         detailFallbackEpisode = seriesList.get(detailFallbackEpisodeIndex);
+    }
+
+    private void captureFallbackIdentity() {
+        detailFallbackYear = mVideo == null ? requestedYear : mVideo.year;
+        if (TextUtils.isEmpty(detailFallbackWorkIdentity)) {
+            detailFallbackWorkIdentity = VersionPolicy.workEpisodeIdentity(detailFallbackTitle, detailFallbackYear,
+                    detailFallbackEpisode == null ? "" : detailFallbackEpisode.name);
+            detailFallbackOriginPlaybackIdentity = playFragment == null ? "" : playFragment.getCurrentPlaybackIdentity();
+        }
+        if (!detailFallbackKeepCurrentDetail) return;
+        fallbackOriginalSource = sourceKey;
+        fallbackOriginalId = vodId;
+        fallbackOriginalFirstSource = firstsourceKey;
+        fallbackOriginalTitle = vod_name;
+        fallbackOriginalPicture = vod_picture;
+    }
+
+    private boolean isEligibleFallback(Movie.Video video) {
+        return video != null && VersionPolicy.canAutoSwitch(detailFallbackTitle, detailFallbackYear, video.name, video.year)
+                && (!detailFallbackChineseOnly || VersionPolicy.claimsChineseSubtitle(video.name, video.note));
+    }
+
+    private boolean hasMatchingFallbackEpisode(Movie.Video video) {
+        VodInfo candidate = new VodInfo();
+        candidate.setVideo(video);
+        if (candidate.seriesMap == null || candidate.seriesMap.isEmpty()) return false;
+        if (detailFallbackEpisode == null) return true;
+        for (List<VodInfo.VodSeries> episodes : candidate.seriesMap.values()) {
+            if (findMatchingEpisodeIndex(detailFallbackEpisode, episodes) >= 0) return true;
+        }
+        return false;
     }
 
     private void restoreDetailFallbackEpisode() {
@@ -1199,9 +1442,6 @@ public class DetailActivity extends BaseActivity {
                 return;
             }
         }
-        if (preferredList != null && !preferredList.isEmpty()) {
-            vodInfo.playIndex = Math.max(0, Math.min(detailFallbackEpisodeIndex, preferredList.size() - 1));
-        }
     }
 
     private boolean containsSeriesFlag(String name) {
@@ -1223,7 +1463,7 @@ public class DetailActivity extends BaseActivity {
         detailFallbackPendingSources.remove(data.sourceKey);
         if (data.movie != null && data.movie.videoList != null) {
             for (Movie.Video video : data.movie.videoList) {
-                if (video == null || TextUtils.isEmpty(video.id) || isDetailFallbackSourceUsed(video.sourceKey) || !detailFallbackTitle.equals(video.name == null ? "" : video.name.trim())) {
+                if (video == null || TextUtils.isEmpty(video.id) || isDetailFallbackSourceUsed(video.sourceKey) || !isEligibleFallback(video)) {
                     continue;
                 }
                 String candidateKey = getDetailFallbackKey(video.sourceKey, video.id);
@@ -1309,7 +1549,7 @@ public class DetailActivity extends BaseActivity {
         while (!detailFallbackCandidates.isEmpty()) {
             Movie.Video video = detailFallbackCandidates.remove(0);
             String candidateKey = getDetailFallbackKey(video.sourceKey, video.id);
-            if (isDetailFallbackSourceUsed(video.sourceKey) || !detailFallbackTriedKeys.add(candidateKey)) {
+            if (!isEligibleFallback(video) || isDetailFallbackSourceUsed(video.sourceKey) || !detailFallbackTriedKeys.add(candidateKey)) {
                 continue;
             }
             LOG.i("echo-detail fallback source: " + video.sourceKey + ", id=" + video.id);
@@ -1354,9 +1594,20 @@ public class DetailActivity extends BaseActivity {
 
     private void finishDetailFallbackWithoutResult() {
         boolean keepCurrentDetail = detailFallbackKeepCurrentDetail;
+        boolean chineseOnly = detailFallbackChineseOnly;
+        if (keepCurrentDetail) {
+            sourceKey = fallbackOriginalSource;
+            vodId = fallbackOriginalId;
+            firstsourceKey = fallbackOriginalFirstSource;
+            vod_name = fallbackOriginalTitle;
+            vod_picture = fallbackOriginalPicture;
+            tvCollect.setText(RoomDataManger.isVodCollect(sourceKey, vodId) ? "取消收藏" : "加入收藏");
+        }
         resetDetailFallback();
         if (!keepCurrentDetail) {
             showDetailEmpty();
+        } else if (chineseOnly) {
+            Toast.makeText(this, "中文字幕仍待确认，可继续观看或手动切换字幕", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -1383,7 +1634,7 @@ public class DetailActivity extends BaseActivity {
         for (Movie.Video video : cachedCandidates) {
             SourceBean source = video == null ? null : ApiConfig.get().getSource(video.sourceKey);
             if (video == null || source == null || !source.isChangeable()
-                    || TextUtils.equals(video.sourceKey, detailFallbackExcludedSourceKey) || isDetailFallbackSourceUsed(video.sourceKey)) {
+                    || !isEligibleFallback(video) || TextUtils.equals(video.sourceKey, detailFallbackExcludedSourceKey) || isDetailFallbackSourceUsed(video.sourceKey)) {
                 continue;
             }
             String candidateKey = getDetailFallbackKey(video.sourceKey, video.id);
@@ -1414,7 +1665,7 @@ public class DetailActivity extends BaseActivity {
         }
         for (Movie.Video video : candidates) {
             if (cachedCandidates.size() >= DETAIL_FALLBACK_MAX_SEARCH || video == null
-                    || TextUtils.isEmpty(video.id) || !TextUtils.equals(title, video.name == null ? "" : video.name.trim())) {
+                    || TextUtils.isEmpty(video.id) || !VersionPolicy.normalizeTitle(title).equals(VersionPolicy.normalizeTitle(video.name))) {
                 continue;
             }
             String candidateKey = getDetailFallbackKey(video.sourceKey, video.id);
@@ -1450,16 +1701,17 @@ public class DetailActivity extends BaseActivity {
         if (TextUtils.isEmpty(detailFallbackTitle) || TextUtils.isEmpty(sourceKey)) {
             return;
         }
-        Set<String> usedSources = detailFallbackUsedSourceKeys.get(detailFallbackTitle);
+        String identity = detailFallbackWorkIdentity;
+        Set<String> usedSources = detailFallbackUsedSourceKeys.get(identity);
         if (usedSources == null) {
             usedSources = new HashSet<>();
-            detailFallbackUsedSourceKeys.put(detailFallbackTitle, usedSources);
+            detailFallbackUsedSourceKeys.put(identity, usedSources);
         }
         usedSources.add(sourceKey);
     }
 
     private boolean isDetailFallbackSourceUsed(String sourceKey) {
-        Set<String> usedSources = detailFallbackUsedSourceKeys.get(detailFallbackTitle);
+        Set<String> usedSources = detailFallbackUsedSourceKeys.get(detailFallbackWorkIdentity);
         return usedSources != null && usedSources.contains(sourceKey);
     }
 
@@ -1483,6 +1735,10 @@ public class DetailActivity extends BaseActivity {
         detailFallbackToken = "";
         detailFallbackBatchToken = "";
         detailFallbackTitle = "";
+        detailFallbackYear = 0;
+        detailFallbackWorkIdentity = "";
+        detailFallbackOriginPlaybackIdentity = "";
+        detailFallbackChineseOnly = false;
         detailFallbackExcludedSourceKey = "";
         detailFallbackSourceOrder.clear();
         detailFallbackCandidates.clear();
@@ -1590,6 +1846,22 @@ public class DetailActivity extends BaseActivity {
     private String detailFallbackToken = "";
     private String detailFallbackBatchToken = "";
     private String detailFallbackTitle = "";
+    private int requestedYear;
+    private int detailFallbackYear;
+    private String detailFallbackWorkIdentity = "";
+    private String detailFallbackOriginPlaybackIdentity = "";
+    private boolean detailFallbackChineseOnly;
+    private final Set<String> subtitleAlternativeAttempts = new HashSet<>();
+    private final SubtitleTrial<SubtitleFallbackSnapshot> subtitleTrial = new SubtitleTrial<>();
+    private Runnable subtitleTrialTimeout;
+    private String subtitleRollbackPendingKey = "";
+    private long subtitleRollbackPendingGeneration = -1L;
+    private boolean subtitleTrialForeground;
+    private String fallbackOriginalSource;
+    private String fallbackOriginalId;
+    private String fallbackOriginalFirstSource;
+    private String fallbackOriginalTitle;
+    private String fallbackOriginalPicture;
     private String detailFallbackExcludedSourceKey = "";
     private final Runnable detailFallbackTimeout = new Runnable() {
         @Override
@@ -1819,18 +2091,14 @@ public class DetailActivity extends BaseActivity {
         if (targetList == null || targetList.isEmpty()) {
             return -1;
         }
-        if (targetList.size() == 1) {
-            return 0;
-        }
         if (currentSeries == null || TextUtils.isEmpty(currentSeries.name)) {
             return -1;
         }
-        int currentEpisode = extractEpisodeNumber(currentSeries.name);
         int matchedIndex = -1;
         int bestScore = 0;
         for (int i = 0; i < targetList.size(); i++) {
             VodInfo.VodSeries targetSeries = targetList.get(i);
-            int score = getEpisodeMatchScore(currentSeries.name, currentEpisode, targetSeries == null ? null : targetSeries.name);
+            int score = getEpisodeMatchScore(currentSeries.name, targetSeries == null ? null : targetSeries.name);
             if (score > bestScore) {
                 bestScore = score;
                 matchedIndex = i;
@@ -1839,46 +2107,9 @@ public class DetailActivity extends BaseActivity {
         return matchedIndex;
     }
 
-    private int getEpisodeMatchScore(String currentName, int currentEpisode, String targetName) {
-        if (TextUtils.isEmpty(currentName) || TextUtils.isEmpty(targetName)) {
-            return 0;
-        }
-        if (targetName.equalsIgnoreCase(currentName)) {
-            return 100;
-        }
-        if (currentEpisode >= 0 && extractEpisodeNumber(targetName) == currentEpisode) {
-            return 80;
-        }
-        String currentLower = currentName.toLowerCase(Locale.ROOT);
-        String targetLower = targetName.toLowerCase(Locale.ROOT);
-        if (currentEpisode < 0 && currentName.length() >= 2 && targetLower.contains(currentLower)) {
-            return 70;
-        }
-        if (currentEpisode < 0 && targetName.length() >= 2 && currentLower.contains(targetLower)) {
-            return 60;
-        }
-        return 0;
-    }
-
-    private int extractEpisodeNumber(String name) {
-        if (TextUtils.isEmpty(name)) {
-            return -1;
-        }
-        try {
-            String text = name.replaceAll("\\[.*?\\]|\\(.*?\\)", "");
-            text = text.replaceAll("\\b(19|20)\\d{2}\\b", "");
-            text = text.toLowerCase(Locale.ROOT).replaceAll("2160p|1080p|720p|480p|4k|h26[45]|x26[45]|mp4", "");
-            Matcher matcher = Pattern.compile("(?i)(?:ep|\\u7b2c|e|[\\-\\.\\s])\\s?(\\d{1,4})").matcher(text);
-            if (matcher.find()) {
-                return Integer.parseInt(matcher.group(1));
-            }
-            String number = text.replaceAll("\\D+", "");
-            if (!TextUtils.isEmpty(number)) {
-                return Integer.parseInt(number);
-            }
-        } catch (Exception ignored) {
-        }
-        return -1;
+    private int getEpisodeMatchScore(String currentName, String targetName) {
+        if (!VersionPolicy.sameEpisode(currentName, targetName)) return 0;
+        return VersionPolicy.normalizeTitle(currentName).equals(VersionPolicy.normalizeTitle(targetName)) ? 100 : 80;
     }
 
     private void insertVod(String sourceKey, VodInfo vodInfo) {
@@ -1892,7 +2123,29 @@ public class DetailActivity extends BaseActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        subtitleTrialForeground = true;
+    }
+
+    @Override
+    protected void onPause() {
+        subtitleTrialForeground = false;
+        cancelSubtitleTrial();
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        subtitleTrialForeground = false;
+        cancelSubtitleTrial();
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
+        subtitleTrialForeground = false;
+        cancelSubtitleTrial();
         resetDetailFallback();
         super.onDestroy();
         try {

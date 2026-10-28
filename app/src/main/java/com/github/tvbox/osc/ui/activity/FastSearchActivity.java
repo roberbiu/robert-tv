@@ -34,6 +34,7 @@ import com.github.tvbox.osc.ui.adapter.SearchWordAdapter;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.HistoryHelper;
 import com.github.tvbox.osc.util.SearchHelper;
+import com.github.tvbox.osc.util.VersionPolicy;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
 import com.lzy.okgo.OkGo;
 import com.owen.tvrecyclerview.widget.TvRecyclerView;
@@ -297,6 +298,7 @@ public class FastSearchActivity extends BaseActivity {
         bundle.putString("id", video.id);
         bundle.putString("sourceKey", video.sourceKey);
         bundle.putString("title", video.name);
+        bundle.putInt("year", video.year);
         bundle.putString("picture", video.pic);
         putDetailFallbackCandidates(bundle, video);
         jumpActivity(DetailActivity.class, bundle);
@@ -364,7 +366,9 @@ public class FastSearchActivity extends BaseActivity {
         if (list == null) {
             list = new ArrayList<>();
         }
-        searchAdapterFilter.setNewData(list);
+        List<Movie.Video> versions = new ArrayList<>(list);
+        sortBalancedVersions(versions);
+        searchAdapterFilter.setNewData(versions);
     }
 
     private void selectWord(String spName) {
@@ -722,6 +726,23 @@ public class FastSearchActivity extends BaseActivity {
             if (!isFilterMode) mGridView.setVisibility(View.VISIBLE);
             searchAdapter.setNewData(data);
         }
+        // 遥控器已经聚焦海报时保留位置，避免迟到结果把当前卡片替换成另一部片。
+        if (!mGridView.hasFocus() && !mGridView.isComputingLayout()) {
+            sortBalancedVersions(searchAdapter.getData());
+            searchAdapter.notifyDataSetChanged();
+        }
+    }
+
+    private void sortBalancedVersions(List<Movie.Video> videos) {
+        Collections.sort(videos, (left, right) -> {
+            SourceBean leftSource = ApiConfig.get().getSource(left.sourceKey);
+            SourceBean rightSource = ApiConfig.get().getSource(right.sourceKey);
+            int leftScore = VersionPolicy.balancedScore(left.name, left.note,
+                    leftSource == null ? "unknown" : leftSource.getAuthorization());
+            int rightScore = VersionPolicy.balancedScore(right.name, right.note,
+                    rightSource == null ? "unknown" : rightSource.getAuthorization());
+            return Integer.compare(rightScore, leftScore);
+        });
     }
 
     private void searchData(AbsXml absXml) {
@@ -774,12 +795,11 @@ public class FastSearchActivity extends BaseActivity {
         if (bundle == null || selectedVideo == null || TextUtils.isEmpty(selectedVideo.name)) {
             return;
         }
-        String title = selectedVideo.name.trim();
         ArrayList<Movie.Video> candidates = new ArrayList<>();
         Set<String> keys = new HashSet<>();
         for (Movie.Video video : detailFallbackSearchResults) {
             if (video == null || TextUtils.isEmpty(video.id)
-                    || !TextUtils.equals(title, video.name == null ? "" : video.name.trim())) {
+                    || !VersionPolicy.canAutoSwitch(selectedVideo.name, selectedVideo.year, video.name, video.year)) {
                 continue;
             }
             String key = (video.sourceKey == null ? "" : video.sourceKey) + "|" + video.id;

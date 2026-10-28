@@ -9,7 +9,9 @@ import com.chad.library.adapter.base.BaseViewHolder;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.bean.Movie;
+import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.util.ImgUtil;
+import com.github.tvbox.osc.util.VersionPolicy;
 
 import java.util.ArrayList;
 
@@ -24,8 +26,13 @@ public class FastSearchAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
 
     @Override
     protected void convert(BaseViewHolder helper, Movie.Video item) {
-        helper.setText(R.id.tvName, item.name);
-        helper.setText(R.id.tvSite, ApiConfig.get().getSource(item.sourceKey).getName());
+        SourceBean source = ApiConfig.get().getSource(item.sourceKey);
+        helper.setText(R.id.tvName, VersionPolicy.displayTitle(item.name, item.year));
+        helper.setText(R.id.tvSite, source == null ? "来源待确认" : source.getName());
+        helper.setVisible(R.id.tvVersionMeta, true);
+        helper.setText(R.id.tvVersionMeta, VersionPolicy.qualityLabel(item.name, item.note)
+                + "\n" + VersionPolicy.subtitleLabel(item.name, item.note)
+                + "\n" + VersionPolicy.authorizationLabel(source == null ? "unknown" : source.getAuthorization()));
         helper.setVisible(R.id.tvNote, item.note != null && !item.note.isEmpty());
         if (item.note != null && !item.note.isEmpty()) helper.setText(R.id.tvNote, item.note);
         ImageView ivThumb = helper.getView(R.id.ivThumb);
