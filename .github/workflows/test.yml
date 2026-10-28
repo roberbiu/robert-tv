@@ -20,6 +20,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-33 build-tools;30.0.3'
       - uses: gradle/actions/setup-gradle@v4
       - name: 验证并构建当前工程
         run: |
