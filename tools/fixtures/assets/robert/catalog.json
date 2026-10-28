@@ -1,0 +1,40 @@
+{
+  "version": 100,
+  "name": "Robert影视本地字幕回退自检",
+  "updatedAt": "2026-10-28",
+  "description": "仅通过调试构建加载的原创播放器回退夹具，不作为生产来源。",
+  "sites": [
+    {
+      "key": "fixture_a",
+      "name": "自检A｜可播无字幕",
+      "type": 1,
+      "api": "http://127.0.0.1.nip.io:18080/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "filterable": 1,
+      "changeable": 1,
+      "playerType": 2,
+      "timeout": 5,
+      "authorization": "none",
+      "categories": [
+        "科幻片"
+      ]
+    },
+    {
+      "key": "fixture_b",
+      "name": "自检B｜中字媒体404",
+      "type": 1,
+      "api": "http://127.0.0.1.nip.io:18081/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "filterable": 1,
+      "changeable": 1,
+      "playerType": 2,
+      "timeout": 5,
+      "authorization": "none",
+      "categories": [
+        "科幻片"
+      ]
+    }
+  ]
+}
