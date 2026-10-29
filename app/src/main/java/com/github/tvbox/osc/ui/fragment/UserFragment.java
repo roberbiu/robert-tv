@@ -72,6 +72,9 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
     private List<Movie.Video> homeSourceRec;
     public static TvRecyclerView tvHotList;
     private SourceViewModel sourceViewModel;
+    private View historyTitle;
+    private View historyEmpty;
+    private View historyEmptySearch;
 
     public static UserFragment newInstance() {
         return new UserFragment();
@@ -109,20 +112,40 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
             int paddingBottom = getResources().getDimensionPixelSize(R.dimen.vs_20);
             tvHotList.setPadding(paddingLeft, paddingTop, paddingRight, paddingBottom);
         }
-        if (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 2) {
-            List<VodInfo> allVodRecord = RoomDataManger.getAllVodRecord(20);
-            List<Movie.Video> vodList = new ArrayList<>();
-            for (VodInfo vodInfo : allVodRecord) {
-                Movie.Video vod = new Movie.Video();
-                vod.id = vodInfo.id;
-                vod.sourceKey = vodInfo.sourceKey;
-                vod.name = vodInfo.name;
-                vod.pic = vodInfo.pic;
-                if (vodInfo.playNote != null && !vodInfo.playNote.isEmpty())
-                    vod.note = "上次看到" + vodInfo.playNote;
-                vodList.add(vod);
-            }
-            homeHotVodAdapter.setNewData(vodList);
+        boolean showHistory = Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 2;
+        historyTitle.setVisibility(showHistory ? View.VISIBLE : View.GONE);
+        if (showHistory) {
+            refreshHistory();
+        } else {
+            historyEmpty.setVisibility(View.GONE);
+        }
+    }
+
+    private void refreshHistory() {
+        boolean hadListFocus = tvHotList.hasFocus();
+        boolean hadEmptyFocus = historyEmptySearch.hasFocus();
+        // Room 已按最近观看时间倒序返回，与历史页共用记录和续播信息。
+        List<VodInfo> allVodRecord = RoomDataManger.getAllVodRecord(20);
+        List<Movie.Video> vodList = new ArrayList<>();
+        for (VodInfo vodInfo : allVodRecord) {
+            Movie.Video vod = new Movie.Video();
+            vod.id = vodInfo.id;
+            vod.sourceKey = vodInfo.sourceKey;
+            vod.name = vodInfo.name;
+            vod.pic = vodInfo.pic;
+            if (vodInfo.playNote != null && !vodInfo.playNote.isEmpty())
+                vod.note = "上次看到" + vodInfo.playNote;
+            vodList.add(vod);
+        }
+        homeHotVodAdapter.setNewData(vodList);
+        boolean empty = vodList.isEmpty();
+        tvHotList.setVisibility(empty ? View.GONE : View.VISIBLE);
+        historyEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+        if (empty) {
+            HawkConfig.hotVodDelete = false;
+            if (hadListFocus) historyEmptySearch.requestFocus();
+        } else if (hadEmptyFocus) {
+            tvHotList.requestFocus();
         }
     }
 
@@ -165,18 +188,23 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
         tvCollect = findViewById(R.id.tvFavorite);
         tvHistory = findViewById(R.id.tvHistory);
         tvPush = findViewById(R.id.tvPush);
+        historyTitle = findViewById(R.id.tvHomeListTitle);
+        historyEmpty = findViewById(R.id.historyEmpty);
+        historyEmptySearch = findViewById(R.id.historyEmptySearch);
         tvLive.setOnClickListener(this);
         tvSearch.setOnClickListener(this);
         tvSetting.setOnClickListener(this);
         tvHistory.setOnClickListener(this);
         tvPush.setOnClickListener(this);
         tvCollect.setOnClickListener(this);
+        historyEmptySearch.setOnClickListener(this);
         tvLive.setOnFocusChangeListener(focusChangeListener);
         tvSearch.setOnFocusChangeListener(focusChangeListener);
         tvSetting.setOnFocusChangeListener(focusChangeListener);
         tvHistory.setOnFocusChangeListener(focusChangeListener);
         tvPush.setOnFocusChangeListener(focusChangeListener);
         tvCollect.setOnFocusChangeListener(focusChangeListener);
+        historyEmptySearch.setOnFocusChangeListener(focusChangeListener);
         tvHotList = findViewById(R.id.tvHotList);
         if (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 1 && homeSourceRec!=null) {
             style=ImgUtil.initStyle();
@@ -201,10 +229,9 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
                 }
 
                 if ((vod.id != null && !vod.id.isEmpty()) && (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 2) && HawkConfig.hotVodDelete) {
-                    homeHotVodAdapter.remove(position);
                     VodInfo vodInfo = RoomDataManger.getVodInfo(vod.sourceKey, vod.id);
-                    assert vodInfo != null;
-                    RoomDataManger.deleteVodRecord(vod.sourceKey, vodInfo);
+                    if (vodInfo != null) RoomDataManger.deleteVodRecord(vod.sourceKey, vodInfo);
+                    refreshHistory();
                     Toast.makeText(mContext, "已删除当前记录", Toast.LENGTH_SHORT).show();
                 } else if (vod.id != null && vod.id.startsWith("msearch:")) {
                     jumpSearch(vod);
@@ -376,7 +403,7 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
         FastClickCheckUtil.check(v);
         if (v.getId() == R.id.tvLive) {
             jumpActivity(LivePlayActivity.class);
-        } else if (v.getId() == R.id.tvSearch) {
+        } else if (v.getId() == R.id.tvSearch || v.getId() == R.id.historyEmptySearch) {
             jumpActivity(SearchActivity.class);
         } else if (v.getId() == R.id.tvSetting) {
             jumpActivity(SettingActivity.class);

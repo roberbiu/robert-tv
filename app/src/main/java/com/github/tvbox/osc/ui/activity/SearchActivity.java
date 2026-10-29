@@ -177,6 +177,7 @@ public class SearchActivity extends BaseActivity {
         llLayout = findViewById(R.id.llLayout);
         llHistoryWord = findViewById(R.id.llHistoryWord);
         etSearch = findViewById(R.id.etSearch);
+        disableSearchHandwriting();
         tvSearch = findViewById(R.id.tvSearch);
         tvSearchCheckboxBtn = findViewById(R.id.tvSearchCheckboxBtn);
         tvClear = findViewById(R.id.tvClear);
@@ -1206,6 +1207,16 @@ public class SearchActivity extends BaseActivity {
             th.printStackTrace();
         }
         EventBus.getDefault().unregister(this);
+    }
+
+    private void disableSearchHandwriting() {
+        if (Build.VERSION.SDK_INT < 34) return;
+        try {
+            // 电视搜索使用遥控器和普通输入法；反射兼容当前 compileSdk 33。
+            View.class.getMethod("setAutoHandwritingEnabled", boolean.class).invoke(etSearch, false);
+        } catch (ReflectiveOperationException | SecurityException ignored) {
+            // 个别厂商系统缺少该接口时，仍保留正常文本输入。
+        }
     }
 
     private void hiddenImm()

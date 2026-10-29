@@ -66,6 +66,11 @@ public class App extends MultiDexApplication {
         // Hawk
         Hawk.init(this).build();
         BuiltinCatalog.initializeDefaults();
+        // 首次安装或从预览版升级时切换为最近观看，之后保留用户在设置中的选择。
+        if (!Hawk.get(HawkConfig.HOME_HISTORY_DEFAULT_MIGRATED, false)) {
+            Hawk.put(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC);
+            Hawk.put(HawkConfig.HOME_HISTORY_DEFAULT_MIGRATED, true);
+        }
         Hawk.put(HawkConfig.DEBUG_OPEN, false);
         Hawk.put(HawkConfig.PLAYER_IS_LIVE, false);
         if (!Hawk.contains(HawkConfig.PLAY_TYPE)) {
