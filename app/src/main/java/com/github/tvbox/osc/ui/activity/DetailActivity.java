@@ -40,6 +40,10 @@ import com.github.tvbox.osc.bean.AbsXml;
 import com.github.tvbox.osc.bean.Movie;
 import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.bean.VodInfo;
+import com.github.tvbox.osc.cloud.CloudException;
+import com.github.tvbox.osc.cloud.CloudReference;
+import com.github.tvbox.osc.util.CloudPlaybackIdentity;
+import com.github.tvbox.osc.util.CloudHistoryRestore;
 import com.github.tvbox.osc.cache.RoomDataManger;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.ui.adapter.SeriesAdapter;
@@ -300,7 +304,7 @@ public class DetailActivity extends BaseActivity {
             if (firstReverse) {
                 jumpToPlay();
                 firstReverse=false;
-            }
+            } else if (playFragment != null) playFragment.requestExplicitPlay();
         });
 
         tvPlay.setOnClickListener(new View.OnClickListener() {
@@ -312,7 +316,7 @@ public class DetailActivity extends BaseActivity {
                     if(firstReverse){
                         jumpToPlay();
                         firstReverse=false;
-                    }
+                    } else if (playFragment != null) playFragment.requestExplicitPlay();
                 } else {
                     jumpToPlay();
                 }
@@ -540,7 +544,7 @@ public class DetailActivity extends BaseActivity {
                     if (!showPreview || reload) {
                         jumpToPlay();
                         firstReverse=false;
-                    }
+                    } else if (playFragment != null) playFragment.requestExplicitPlay();
                 }
             }
         });
@@ -638,6 +642,10 @@ public class DetailActivity extends BaseActivity {
     private List<Runnable> pauseRunnable = null;
 
     private void jumpToPlay() {
+        jumpToPlay(true);
+    }
+
+    private void jumpToPlay(boolean explicitPlay) {
         if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
             preFlag = vodInfo.playFlag;
             //更新播放地址
@@ -647,6 +655,7 @@ public class DetailActivity extends BaseActivity {
             insertVod(firstsourceKey, vodInfo);
         //   insertVod(sourceKey, vodInfo);
             bundle.putString("sourceKey", sourceKey);
+            bundle.putBoolean("explicit_play", explicitPlay);
 //            bundle.putSerializable("VodInfo", vodInfo);
             App.getInstance().setVodInfo(vodInfo);
             if (showPreview) {
@@ -777,6 +786,10 @@ public class DetailActivity extends BaseActivity {
     private void updateQualityOptions(JSONObject result) {
         ArrayList<String> options = new ArrayList<>();
         try {
+            if (result != null && result.has("cloud_quality_options")) {
+                options.add("当前清晰度：" + result.optString("cloud_quality", "自动"));
+                options.add("切换清晰度 / 原画权益");
+            }
             Object value = result == null ? null : result.opt("url");
             JSONArray urls = value instanceof JSONArray ? (JSONArray) value : value instanceof String ? new JSONArray((String) value) : null;
             if (urls != null) for (int i = 0; i + 1 < urls.length(); i += 2) options.add(urls.optString(i));
@@ -791,7 +804,7 @@ public class DetailActivity extends BaseActivity {
         qualityOptions.clear();
         qualityOptions.addAll(options);
         qualityPosition = 0;
-        boolean visible = showPreview && options.size() > 1;
+        boolean visible = options.size() > 1;
         mGridViewQuality.setVisibility(visible ? View.VISIBLE : View.GONE);
         seriesFlagAdapter.notifyDataSetChanged();
         seriesAdapter.notifyDataSetChanged();
@@ -969,6 +982,7 @@ public class DetailActivity extends BaseActivity {
                         if (vodInfo.reverseSort) {
                             vodInfo.reverse();
                         }
+                        CloudHistoryRestore.restore(vodInfo, vodInfoRecord);
 
                         if (vodInfo.playFlag == null || !vodInfo.seriesMap.containsKey(vodInfo.playFlag))
                             vodInfo.playFlag = (String) vodInfo.seriesMap.keySet().toArray()[0];
@@ -1004,7 +1018,7 @@ public class DetailActivity extends BaseActivity {
 
                         refreshList();
                         if (showPreview || subtitleTrial.isPending()) {
-                            jumpToPlay();
+                            jumpToPlay(false);
                             llPlayerFragmentContainer.setVisibility(View.VISIBLE);
                             llPlayerFragmentContainerBlock.setVisibility(View.VISIBLE);
                             toggleSubtitleTextSize();
@@ -1159,7 +1173,10 @@ public class DetailActivity extends BaseActivity {
 
     public void confirmSubtitleTrialStarted(String playbackIdentity, long generation) {
         if (isCurrentSubtitleTrial(generation, playbackIdentity)
-                && subtitleTrial.confirmStarted(playbackIdentity, generation)) clearSubtitleTrialTimeout();
+                && subtitleTrial.confirmStarted(playbackIdentity, generation)) {
+            clearSubtitleTrialTimeout();
+            if (playFragment != null) playFragment.releaseProtectedSnapshot();
+        }
     }
 
     public void onSubtitlePlaybackTargetChanged(String playbackIdentity) {
@@ -1192,7 +1209,10 @@ public class DetailActivity extends BaseActivity {
             if (subtitleTrialForeground && !isFinishing() && !isDestroyed()
                     && subtitleTrial.isGenerationCurrent(restoreGeneration) && playFragment != null
                     && TextUtils.equals(playbackIdentity, playFragment.getCurrentPlaybackIdentity())) {
+                // 此恢复已通过代际审查；先消费旧目标，避免play(original)将它当作新的换片取消。
+                subtitleRollbackPendingKey = "";
                 restoreSubtitleOriginal(snapshot);
+                if (playFragment != null) playFragment.releaseProtectedSnapshot();
             }
             if (subtitleRollbackPendingGeneration == restoreGeneration) subtitleRollbackPendingKey = "";
         });
@@ -1204,6 +1224,7 @@ public class DetailActivity extends BaseActivity {
                 || detailFallbackChineseOnly;
         if (hadPendingDetail && sourceViewModel != null) sourceViewModel.cancelDetailRequest();
         subtitleTrial.clear();
+        if (playFragment != null) playFragment.releaseProtectedSnapshot();
         clearSubtitleTrialTimeout();
         subtitleRollbackPendingKey = "";
         subtitleRollbackPendingGeneration = -1L;
@@ -2112,9 +2133,47 @@ public class DetailActivity extends BaseActivity {
         return VersionPolicy.normalizeTitle(currentName).equals(VersionPolicy.normalizeTitle(targetName)) ? 100 : 80;
     }
 
+    private final java.util.Set<String> confirmedCloudFiles = new java.util.HashSet<>();
+
+    public void onCloudFilesSelected(VodInfo playing) {
+        if (vodInfo == null || playing == null || !TextUtils.equals(vodInfo.id, playing.id)
+                || !TextUtils.equals(vodInfo.sourceKey, playing.sourceKey)) return;
+        vodInfo.seriesMap.put(playing.playFlag, playing.seriesMap.get(playing.playFlag));
+        vodInfo.playFlag = playing.playFlag;
+        vodInfo.playIndex = playing.playIndex;
+        syncPlayingVodInfo(playing);
+        refreshList();
+    }
+
+    public void onCloudPlaybackConfirmed(VodInfo playing) {
+        if (vodInfo == null || playing == null || !TextUtils.equals(vodInfo.id, playing.id)
+                || !TextUtils.equals(vodInfo.sourceKey, playing.sourceKey)) return;
+        try {
+            VodInfo.VodSeries episode = playing.seriesMap.get(playing.playFlag).get(playing.playIndex);
+            CloudReference ref = CloudReference.decode(episode.url);
+            confirmedCloudFiles.add(CloudPlaybackIdentity.progressKey(ref));
+            onCloudFilesSelected(playing);
+            insertVod(firstsourceKey, vodInfo);
+        } catch (CloudException | RuntimeException ignored) { }
+    }
+
+    public void onPlaybackProgressConfirmed(String identity) {
+        if (playFragment != null && !subtitleTrial.isPending()
+                && TextUtils.equals(identity, playFragment.getCurrentPlaybackIdentity())) {
+            playFragment.releaseProtectedSnapshot();
+        }
+    }
+
     private void insertVod(String sourceKey, VodInfo vodInfo) {
         try {
+            VodInfo.VodSeries episode = vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex);
+            if (episode.url != null && episode.url.startsWith(CloudReference.PREFIX)) {
+                CloudReference ref = CloudReference.decode(episode.url);
+                if (!ref.isFile() || !confirmedCloudFiles.contains(CloudPlaybackIdentity.progressKey(ref))) return;
+            }
             vodInfo.playNote = vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex).name;
+        } catch (CloudException th) {
+            return;
         } catch (Throwable th) {
             vodInfo.playNote = "";
         }

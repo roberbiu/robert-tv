@@ -21,6 +21,16 @@ import com.github.tvbox.osc.bean.AbsXml;
 import com.github.tvbox.osc.bean.Movie;
 import com.github.tvbox.osc.bean.MovieSort;
 import com.github.tvbox.osc.bean.SourceBean;
+import com.github.tvbox.osc.catalog.SourceDescriptor;
+import com.github.tvbox.osc.catalog.SourceRegistry;
+import com.github.tvbox.osc.catalog.SourceSnapshot;
+import com.github.tvbox.osc.source.AdapterRuntime;
+import com.github.tvbox.osc.source.AdapterRegistry;
+import com.github.tvbox.osc.source.DomainError;
+import com.github.tvbox.osc.source.RequestContext;
+import com.github.tvbox.osc.source.SourceResult;
+import com.github.tvbox.osc.source.net.CmsMetadataHttp;
+import com.github.tvbox.osc.search.SearchOutcomePolicy;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.player.thirdparty.RemoteTVBox;
 import com.github.tvbox.osc.util.DefaultConfig;
@@ -98,6 +108,9 @@ public class SourceViewModel extends ViewModel {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger playRequestSeq = new AtomicInteger();
     private final AtomicInteger detailRequestSeq = new AtomicInteger();
+    private final AtomicInteger localRequestSeq = new AtomicInteger();
+    private final ConcurrentHashMap<String, RequestContext> localRequests = new ConcurrentHashMap<>();
+    private final ExecutorService localDispatchers = Executors.newFixedThreadPool(3);
 
     public SourceViewModel() {
         sortResult = new MutableLiveData<>();
@@ -113,6 +126,77 @@ public class SourceViewModel extends ViewModel {
 
     public static final ExecutorService spThreadPool = Executors.newSingleThreadExecutor();
     private static final ExecutorService httpPrepareThreadPool = Executors.newFixedThreadPool(3);
+
+    private interface LocalOperation { String call(Spider spider) throws Exception; }
+    private interface LocalCallback { void complete(SourceResult<String> result); }
+
+    private boolean isLocalSource(SourceBean source) {
+        return source != null && source.getType() == 3 && source.getApi() != null
+                && source.getApi().startsWith("builtin:");
+    }
+
+    private void callLocal(String slot, SourceBean source, long generation, long playbackGeneration,
+                           boolean explicitUserAction, LocalOperation operation, LocalCallback callback) {
+        SourceSnapshot snapshot = SourceRegistry.get(App.getInstance()).snapshot();
+        SourceDescriptor descriptor = snapshot.getSource(source.getKey());
+        if (descriptor == null) {
+            callback.complete(SourceResult.failure(new DomainError(DomainError.Code.SOURCE_UNAVAILABLE), null));
+            return;
+        }
+        RequestContext metadataContext = new RequestContext(descriptor, snapshot.getRevision(), generation);
+        RequestContext context = playbackGeneration > 0
+                ? metadataContext.withPlayback(playbackGeneration, explicitUserAction) : metadataContext;
+        RequestContext previous = localRequests.put(slot, context);
+        if (previous != null) previous.cancel();
+        try {
+            localDispatchers.execute(() -> {
+                if (context.isCancelled()) { localRequests.remove(slot, context); return; }
+                SourceResult<String> result = AdapterRuntime.get().execute(descriptor, context,
+                        () -> operation.call(AdapterRegistry.get().getSpider(App.getInstance(), descriptor)));
+                // Runtime超时也会取消底层请求，但仍应回报错误；用户取消会先移除槽位。
+                if (!localRequests.remove(slot, context)) return;
+                callback.complete(result);
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            localRequests.remove(slot, context);
+            context.cancel();
+            callback.complete(SourceResult.failure(new DomainError(DomainError.Code.CANCELLED), context));
+        }
+    }
+
+    private void cancelLocal(String slot) {
+        RequestContext context = localRequests.remove(slot);
+        if (context != null) context.cancel();
+    }
+
+    public void cancelNativeSearchRequests() {
+        for (Map.Entry<String, RequestContext> entry : localRequests.entrySet()) {
+            if (entry.getKey().startsWith("search:")
+                    && localRequests.remove(entry.getKey(), entry.getValue())) entry.getValue().cancel();
+        }
+    }
+
+    private JSONObject localFailure(SourceResult<?> result) {
+        DomainError error = result.getError();
+        String code = error == null ? "SOURCE_UNAVAILABLE" : error.getCode().name();
+        JSONObject value = new JSONObject();
+        try {
+            value.put("error_code", code);
+            if (error != null && !error.getProvider().isEmpty()) value.put("provider", error.getProvider());
+            String message;
+            switch (code) {
+                case "NETWORK": message = "网络请求暂时失败，可重试或选择其他来源"; break;
+                case "NO_MATCH": message = "未找到符合条件的内容"; break;
+                case "AUTH_REQUIRED": message = "此线路需要网盘授权"; break;
+                case "SESSION_EXPIRED": message = "网盘登录已失效，请重新扫码"; break;
+                case "ENTITLEMENT_REQUIRED": message = "当前账号权益不支持此版本，可选择其他版本"; break;
+                case "CANCELLED": message = "操作已取消"; break;
+                default: message = "此来源暂不可用，可重试或选择其他来源";
+            }
+            value.put("msg", message);
+        } catch (org.json.JSONException ignored) { }
+        return value;
+    }
 
     //homeContent缓存，最多存储5个sourceKey的AbsSortXml对象
     private static final Map<String, AbsSortXml> sortCache = new LinkedHashMap<String, AbsSortXml>(5, 0.75f, true) {
@@ -293,7 +377,7 @@ public class SourceViewModel extends ViewModel {
             };
             httpPrepareThreadPool.execute(waitResponse);
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(sourceBean.getApi())
+            CmsMetadataHttp.get(sourceBean)
                     .tag(sourceBean.getKey() + "_sort")
                     .execute(new AbsCallback<String>() {
                         @Override
@@ -484,7 +568,7 @@ public class SourceViewModel extends ViewModel {
                 }
             });
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(homeSourceBean.getApi())
+            CmsMetadataHttp.get(homeSourceBean)
                     .tag(homeSourceBean.getApi())
                     .params("ac", type == 0 ? "videolist" : "detail")
                     .params("t", sortData.id)
@@ -616,7 +700,7 @@ public class SourceViewModel extends ViewModel {
                 }
             });
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(sourceBean.getApi())
+            CmsMetadataHttp.get(sourceBean)
                     .tag(sourceBean.getKey() + "_folder")
                     .params("ac", type == 0 ? "videolist" : "detail")
                     .params("t", id)
@@ -722,7 +806,7 @@ public class SourceViewModel extends ViewModel {
             };
             spThreadPool.execute(waitResponse);
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(sourceBean.getApi())
+            CmsMetadataHttp.get(sourceBean)
                     .tag("detail")
                     .params("ac", sourceBean.getType() == 0 ? "videolist" : "detail")
                     .params("ids", TextUtils.join(",", ids))
@@ -770,6 +854,7 @@ public class SourceViewModel extends ViewModel {
     }
 
     public void getDetail(String sourceKey, String urlid, boolean fallback) {
+        cancelLocal("detail");
         final int requestGeneration = detailRequestSeq.incrementAndGet();
         if (TextUtils.isEmpty(urlid)) {
             postEmptyDetailResult(sourceKey, requestGeneration);
@@ -802,6 +887,17 @@ public class SourceViewModel extends ViewModel {
         }
         if (sourceBean == null) {
             postEmptyDetailResult(sourceKey, requestGeneration);
+            return;
+        }
+        if (isLocalSource(sourceBean)) {
+            callLocal("detail", sourceBean, requestGeneration, 0, false, spider -> {
+                List<String> ids = new ArrayList<>();
+                ids.add(id);
+                return spider.detailContent(ids);
+            }, result -> {
+                if (result.isSuccess()) json(detailResult, result.getData(), sourceBean.getKey(), "", requestGeneration);
+                else postEmptyDetailResult(sourceBean.getKey(), requestGeneration);
+            });
             return;
         }
         int type = sourceBean.getType();
@@ -845,7 +941,7 @@ public class SourceViewModel extends ViewModel {
             String extend=sourceBean.getExt();
             extend=fallback ? getFixUrl(extend, 6) : getFixUrl(extend);
 
-            GetRequest<String> request = OkGo.<String>get(sourceBean.getApi())
+            GetRequest<String> request = CmsMetadataHttp.get(sourceBean, fallback ? 6 : sourceBean.getPlayTimeoutSeconds())
                     .tag("detail")
                     .params("ac", type == 0 ? "videolist" : "detail")
                     .params("ids", id);
@@ -897,6 +993,7 @@ public class SourceViewModel extends ViewModel {
 
     /** 用户主动离开当前详情请求时使其回调失效，包括已经排入主线程的结果。 */
     public void cancelDetailRequest() {
+        cancelLocal("detail");
         detailRequestSeq.incrementAndGet();
     }
 
@@ -958,7 +1055,15 @@ public class SourceViewModel extends ViewModel {
     private void getSearch(String sourceKey, String wd, String searchToken, MutableLiveData<AbsXml> result, String requestTag) {
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
         if (sourceBean == null) {
-            postEmptySearchResult(result, sourceKey, searchToken);
+            postSearchEnvelope(result, SearchOutcomePolicy.failure(sourceKey, searchToken, "SOURCE_UNAVAILABLE"));
+            return;
+        }
+        if (isLocalSource(sourceBean)) {
+            String slot = "search:" + requestTag + ":" + sourceKey + ":" + searchToken;
+            callLocal(slot, sourceBean, localRequestSeq.incrementAndGet(), 0, false,
+                    spider -> spider.searchContent(wd, false), outcome -> {
+                        postNativeSearchResult(result, sourceKey, searchToken, outcome);
+                    });
             return;
         }
         int type = sourceBean.getType();
@@ -977,7 +1082,7 @@ public class SourceViewModel extends ViewModel {
                 json(result, "", sourceBean.getKey(), searchToken);
             }
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(sourceBean.getApi())
+            CmsMetadataHttp.get(sourceBean)
                     .params("wd", wd)
                     .params(type == 1 ? "ac" : null, type == 1 ? "detail" : null)
                     .tag(requestTag)
@@ -1070,7 +1175,15 @@ public class SourceViewModel extends ViewModel {
     public void getQuickSearch(String sourceKey, String wd, String searchToken) {
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
         if (sourceBean == null) {
-            postEmptySearchResult(quickSearchResult, sourceKey, searchToken);
+            postSearchEnvelope(quickSearchResult, SearchOutcomePolicy.failure(sourceKey, searchToken, "SOURCE_UNAVAILABLE"));
+            return;
+        }
+        if (isLocalSource(sourceBean)) {
+            String slot = "search:quick_search:" + sourceKey + ":" + searchToken;
+            callLocal(slot, sourceBean, localRequestSeq.incrementAndGet(), 0, false,
+                    spider -> spider.searchContent(wd, true), outcome -> {
+                        postNativeSearchResult(quickSearchResult, sourceKey, searchToken, outcome);
+                    });
             return;
         }
         int type = sourceBean.getType();
@@ -1083,7 +1196,7 @@ public class SourceViewModel extends ViewModel {
                 postEmptySearchResult(quickSearchResult, sourceBean.getKey(), searchToken);
             }
         } else if (type == 0 || type == 1) {
-            OkGo.<String>get(sourceBean.getApi())
+            CmsMetadataHttp.get(sourceBean)
                     .params("wd", wd)
                     .params(type == 1 ? "ac" : null, type == 1 ? "detail" : null)
                     .tag("quick_search")
@@ -1162,6 +1275,12 @@ public class SourceViewModel extends ViewModel {
     }
     // playerContent
     public void getPlay(String sourceKey, String playFlag, String progressKey, String url, String subtitleKey) {
+        getPlay(sourceKey, playFlag, progressKey, url, subtitleKey, false, 0);
+    }
+
+    public void getPlay(String sourceKey, String playFlag, String progressKey, String url, String subtitleKey,
+                        boolean explicitUserAction, long playbackGeneration) {
+        cancelLocal("play");
         final int requestSeq = playRequestSeq.incrementAndGet();
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
         boolean pushFallback = isPushFallback(sourceKey, sourceBean);
@@ -1169,6 +1288,30 @@ public class SourceViewModel extends ViewModel {
         String requestUrl = pushUrl.url;
         if (pushFallback) {
             postPlayResult(requestSeq, createPushPlayResult(url, pushUrl, progressKey, subtitleKey, playFlag));
+            return;
+        }
+        if (sourceBean == null) {
+            postPlayResult(requestSeq, localFailure(SourceResult.failure(
+                    new DomainError(DomainError.Code.SOURCE_UNAVAILABLE), null)));
+            return;
+        }
+        if (isLocalSource(sourceBean)) {
+            callLocal("play", sourceBean, requestSeq, playbackGeneration, explicitUserAction,
+                    spider -> spider.playerContent(playFlag, requestUrl, ApiConfig.get().getVipParseFlags()), result -> {
+                        JSONObject info;
+                        try {
+                            info = result.isSuccess() && !TextUtils.isEmpty(result.getData())
+                                    ? normalizePlayerResult(new JSONObject(result.getData())) : localFailure(result);
+                            info.put("key", url);
+                            info.put("proKey", progressKey);
+                            info.put("subtKey", subtitleKey);
+                            info.put("flag", info.optString("flag", playFlag));
+                            info.put("playback_generation", playbackGeneration);
+                        } catch (Exception ignored) {
+                            info = localFailure(SourceResult.failure(new DomainError(DomainError.Code.INVALID_RESPONSE), null));
+                        }
+                        postPlayResult(requestSeq, info);
+                    });
             return;
         }
         int type = sourceBean.getType();
@@ -1183,10 +1326,10 @@ public class SourceViewModel extends ViewModel {
                             Spider sp = ApiConfig.get().getCSP(sourceBean);
                             if (TextUtils.isEmpty(requestUrl)) return "";
                             try {
-                                LOG.i("echo--getPlay--id: " + requestUrl);
+                                LOG.i("开始解析播放来源");
                                 return sp.playerContent(playFlag, requestUrl, ApiConfig.get().getVipParseFlags());
                             } catch (Exception e) {
-                                LOG.i("echo--getPlay--error: " + e.getMessage());
+                                LOG.i("播放来源解析失败");
                                 return "";
                             }
                         }
@@ -1194,7 +1337,7 @@ public class SourceViewModel extends ViewModel {
 
                     try {
                         String json = future.get(sourceBean.getPlayTimeoutSeconds(), TimeUnit.SECONDS);
-                        LOG.i("echo--getPlay--result:" + json);
+                        // 解析结果可能含临时媒体签名或账号头，不能写入调试日志。
                         // 处理返回的 JSON
                         if (!TextUtils.isEmpty(json)) {
                             JSONObject result = normalizePlayerResult(new JSONObject(json));
@@ -1219,7 +1362,7 @@ public class SourceViewModel extends ViewModel {
                         postPlayResult(requestSeq, null);
                     } catch (Exception e) {
                         // 捕获其他异常
-                        LOG.i("echo--getPlay--error: " + e.getMessage());
+                        LOG.i("获取播放结果失败");
                         postPlayResult(requestSeq, null);
                     } finally {
                         executor.shutdown();
@@ -1301,6 +1444,7 @@ public class SourceViewModel extends ViewModel {
     }
 
     public void cancelPlayRequest() {
+        cancelLocal("play");
         playRequestSeq.incrementAndGet();
     }
 
@@ -1481,6 +1625,11 @@ public class SourceViewModel extends ViewModel {
             @Override
             public void run() {
                 if (requestSeq != playRequestSeq.get()) {
+                    if (result != null) {
+                        try {
+                            com.github.tvbox.osc.playback.ProxyRouter.get(App.getInstance()).release(result.optString("url", ""));
+                        } catch (com.github.tvbox.osc.cloud.CloudException ignored) { }
+                    }
                     LOG.i("echo--getPlay--ignore stale result");
                     return;
                 }
@@ -1681,13 +1830,7 @@ public class SourceViewModel extends ViewModel {
     }
 
     private static List<Movie.Video> allowedVideos(List<Movie.Video> videos) {
-        List<Movie.Video> allowed = new ArrayList<>();
-        if (videos != null) {
-            for (Movie.Video video : videos) {
-                if (video != null && ContentPolicy.isAllowedCategory(video.type)) allowed.add(video);
-            }
-        }
-        return allowed;
+        return SearchOutcomePolicy.allowedVideos(videos);
     }
 
     private static int linePriority(Movie.Video.UrlBean.UrlInfo line) {
@@ -2073,6 +2216,17 @@ public class SourceViewModel extends ViewModel {
         AbsXml data = new AbsXml();
         data.sourceKey = sourceKey;
         data.searchToken = searchToken;
+        postSearchEnvelope(result, data);
+    }
+
+    private void postNativeSearchResult(MutableLiveData<AbsXml> target, String sourceKey, String token, SourceResult<String> outcome) {
+        AbsXml data = outcome.isSuccess() ? SearchOutcomePolicy.decodeNative(outcome.getData(), sourceKey, token)
+                : SearchOutcomePolicy.failure(sourceKey, token, outcome.getError() == null ? "SOURCE_UNAVAILABLE" : outcome.getError().getCode().name());
+        if (!SearchOutcomePolicy.isFailure(data)) absXml(data, sourceKey, token);
+        postSearchEnvelope(target, data);
+    }
+
+    private void postSearchEnvelope(MutableLiveData<AbsXml> result, AbsXml data) {
         if (searchResult == result) {
             EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_SEARCH_RESULT, data));
         } else if (quickSearchResult == result) {
@@ -2098,6 +2252,10 @@ public class SourceViewModel extends ViewModel {
     @Override
     protected void onCleared() {
         detailRequestSeq.incrementAndGet();
+        playRequestSeq.incrementAndGet();
+        for (RequestContext context : localRequests.values()) context.cancel();
+        localRequests.clear();
+        localDispatchers.shutdownNow();
         super.onCleared();
     }
 }

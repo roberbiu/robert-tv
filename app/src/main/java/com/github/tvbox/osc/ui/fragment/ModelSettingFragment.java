@@ -156,12 +156,12 @@ public class ModelSettingFragment extends BaseLazyFragment {
         tvApi.setText(Hawk.get(HawkConfig.API_URL, ""));
         refreshApiLineText();
 
-        tvDns.setText(OkGoHelper.dnsHttpsList.get(Hawk.get(HawkConfig.DOH_URL, 0)));
+        tvDns.setText("自动");
         tvHomeRec.setText(getHomeRecName(Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC)));
         tvHistoryNum.setText(HistoryHelper.getHistoryNumName(Hawk.get(HawkConfig.HISTORY_NUM, 0)));
         tvHistoryMerge.setText(Hawk.get(HawkConfig.HISTORY_MERGE, false) ? "开启" : "关闭");
         tvSearchView.setText(getSearchView(Hawk.get(HawkConfig.SEARCH_VIEW, 0)));
-        tvHomeApi.setText(ApiConfig.get().getHomeSourceBean().getName());
+        tvHomeApi.setText(homeSourceName());
         tvScale.setText(PlayerHelper.getScaleName(Hawk.get(HawkConfig.PLAY_SCALE, 0)));
         tvPlay.setText(PlayerHelper.getPlayerName(Hawk.get(HawkConfig.PLAY_TYPE, 2)));
         tvRender.setText(PlayerHelper.getRenderName(Hawk.get(HawkConfig.PLAY_RENDER, 0)));
@@ -259,7 +259,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
                         public void click(SourceBean value, int pos) {
                             dialog.dismiss();
                             ApiConfig.get().setSourceBean(value);
-                            tvHomeApi.setText(ApiConfig.get().getHomeSourceBean().getName());
+                            tvHomeApi.setText(homeSourceName());
                             EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_HOME_SOURCE_CHANGE));
                         }
 
@@ -810,6 +810,35 @@ public class ModelSettingFragment extends BaseLazyFragment {
 
         findViewById(R.id.llIjkCachePlay).setOnClickListener((view -> onClickIjkCachePlay(view)));
         findViewById(R.id.llClearCache).setOnClickListener((view -> onClickClearCache(view)));
+        hideManagedCatalogSettings();
+    }
+
+    private String homeSourceName() {
+        SourceBean source = ApiConfig.get().getHomeSourceBean();
+        return source == null ? "自动选择" : source.getName();
+    }
+
+    /** 目录自动维护、首页固定观看历史；不暴露已失效的导入、推荐和裸代理开关。 */
+    private void hideManagedCatalogSettings() {
+        int[] hidden = {R.id.llApi, R.id.llApiHistory, R.id.llApiLine, R.id.llApiRightGroup,
+                R.id.llHomeApi, R.id.tvHomeLive, R.id.llHomeRec, R.id.llHomeRecStyle,
+                R.id.llDns, R.id.m3u8Ad};
+        for (int id : hidden) {
+            View view = findViewById(id);
+            if (view == null) continue;
+            view.setOnClickListener(null);
+            view.setFocusable(false);
+            view.setVisibility(View.GONE);
+        }
+        // 这三个容器内所有选项均已隐藏，同时收起固定高度，避免空行截断遥控器焦点。
+        hideParent(R.id.llApi);
+        hideParent(R.id.llHomeApi);
+        hideParent(R.id.llHomeRec);
+    }
+
+    private void hideParent(int id) {
+        View child = findViewById(id);
+        if (child != null && child.getParent() instanceof View) ((View) child.getParent()).setVisibility(View.GONE);
     }
 
     private void restartAppAfterConfigChanged() {
@@ -954,6 +983,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
         if (requestCode != REQUEST_LOCAL_CONFIG || resultCode != android.app.Activity.RESULT_OK || data == null || data.getData() == null) {
             return;
         }
+        if (apiDialog == null) return;
         String api = localConfigToApi(data.getData());
         if (api == null || api.isEmpty()) {
             Toast.makeText(getContext(), "读取本地配置失败", Toast.LENGTH_SHORT).show();

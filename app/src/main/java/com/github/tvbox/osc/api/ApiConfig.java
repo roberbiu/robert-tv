@@ -24,7 +24,10 @@ import com.github.tvbox.osc.bean.LiveSettingItem;
 import com.github.tvbox.osc.bean.ParseBean;
 import com.github.tvbox.osc.bean.ProxyRule;
 import com.github.tvbox.osc.bean.SourceBean;
-import com.github.tvbox.osc.catalog.BuiltinCatalog;
+import com.github.tvbox.osc.catalog.SourceDescriptor;
+import com.github.tvbox.osc.catalog.SourceSnapshot;
+import com.github.tvbox.osc.catalog.SourceRegistry;
+import com.github.tvbox.osc.source.AdapterRegistry;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.util.AES;
 import com.github.tvbox.osc.util.AdBlocker;
@@ -75,7 +78,7 @@ import java.util.regex.Pattern;
  */
 public class ApiConfig {
     private static ApiConfig instance;
-    private final LinkedHashMap<String, SourceBean> sourceBeanList;
+    private volatile LinkedHashMap<String, SourceBean> sourceBeanList;
     private SourceBean mHomeSource;
     private ParseBean mDefaultParse;
     private final List<LiveChannelGroup> liveChannelGroupList;
@@ -101,7 +104,6 @@ public class ApiConfig {
     private final ExecutorService configLoadExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService jarLoadExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService danmuSearchExecutor = Executors.newSingleThreadExecutor();
-    private final Set<String> warmedSearchSpiderKeys = new HashSet<>();
 
     private final String userAgent = "okhttp/3.15";
 
@@ -192,19 +194,18 @@ public class ApiConfig {
         return configUrl;
     }
     public void loadConfig(boolean useCache, LoadConfigCallback callback, Activity activity) {
-        // 即使局域网控制端或旧设置写入了地址，也只加载项目维护的受控目录。
-        Hawk.put(HawkConfig.API_URL, BuiltinCatalog.MANAGED_URL);
+        // 两组受控目录先独立校验再合并，绝不导入第三方全局规则或执行文件。
+        Hawk.put(HawkConfig.API_URL, SourceRegistry.MANAGED_URL);
         configLoadExecutor.execute(() -> {
-            BuiltinCatalog catalog = BuiltinCatalog.get(App.getInstance());
+            SourceRegistry registry = SourceRegistry.get(App.getInstance());
             try {
-                String json = catalog.loadLocal();
+                SourceSnapshot snapshot = registry.loadLocal();
                 mainHandler.post(() -> {
                     try {
                         HistoryHelper.clearApiLineList();
-                        VideoParseRuler.clearRule();
-                        parseJson(BuiltinCatalog.MANAGED_URL, json);
+                        installSourceSnapshot(snapshot);
                     } catch (RuntimeException error) {
-                        LOG.i("Robert影视默认目录初始化失败");
+                        LOG.i("默认来源初始化失败");
                         callback.error("默认内容暂时无法初始化，请重试");
                         return;
                     }
@@ -213,10 +214,31 @@ public class ApiConfig {
             } catch (IOException | IllegalArgumentException error) {
                 mainHandler.post(() -> callback.error("默认内容暂时无法初始化，请重试"));
             } finally {
-                // 只更新下次加载所用的缓存，不二次回调或打断当前播放状态。
-                catalog.refreshIfDue();
+                // 只更新下次安全加载所用的缓存，不替换在途来源或播放上下文。
+                registry.refreshIfDue();
             }
         });
+    }
+
+    private void installSourceSnapshot(SourceSnapshot snapshot) {
+        LinkedHashMap<String, SourceBean> ready = new LinkedHashMap<>();
+        SourceBean firstCms = null;
+        for (SourceDescriptor descriptor : snapshot.getSources()) {
+            SourceBean bean = descriptor.getSourceBean();
+            ready.put(bean.getKey(), bean);
+            if (firstCms == null && bean.getType() == 1) firstCms = bean;
+        }
+        if (firstCms == null) throw new IllegalStateException("缺少免认证后备来源");
+        // 引用替换保持旧读取者所持Map有效，不暴露clear/putAll中间态。
+        sourceBeanList = ready;
+        searchSourceBeanList = new ArrayList<>();
+        String homeId = Hawk.get(HawkConfig.HOME_API, "");
+        SourceBean home = ready.get(homeId);
+        setSourceBean(home == null ? firstCms : home);
+        spider = "";
+        currentPyKey = "";
+        if (vipParseFlags == null) vipParseFlags = new ArrayList<>();
+        if (myHosts == null) myHosts = new HashMap<>();
     }
 
     public void loadLiveConfig(boolean useCache, LoadConfigCallback callback) {
@@ -1418,57 +1440,16 @@ public class ApiConfig {
     }
 
     public Spider getCSP(SourceBean sourceBean) {
-        if (sourceBean.getApi().endsWith(".js") || sourceBean.getApi().contains(".js?")){
-            currentPyKey = "";
-            return jsLoader.getSpider(sourceBean.getKey(), sourceBean.getApi(), sourceBean.getExt(), sourceBean.getJar());
+        if (sourceBean == null || sourceBean.getType() != 3
+                || !sourceBean.getApi().equals("builtin:" + sourceBean.getAdapterId())) {
+            throw new IllegalArgumentException("外部适配程序未准入");
         }
-        else if (sourceBean.getApi().contains(".py")) {
-            currentPyKey = sourceBean.getKey();
-            pyLoader.setRecentPyKey(currentPyKey);
-            return pyLoader.getSpider(sourceBean.getKey(), sourceBean.getApi(), sourceBean.getExt());
-        }
-        else {
-            currentPyKey = "";
-            return jarLoader.getSpider(sourceBean.getKey(), sourceBean.getApi(), sourceBean.getExt(), sourceBean.getJar());
-        }
+        currentPyKey = "";
+        return AdapterRegistry.get().getSpider(App.getInstance(), sourceBean);
     }
 
     public void warmSearchSpiders() {
-        final ArrayList<SourceBean> sources = new ArrayList<>(sourceBeanList.values());
-        final SourceBean home = getHomeSourceBean();
-        final Set<String> sharedSpiderApis = new HashSet<>();
-        Set<String> spiderApis = new HashSet<>();
-        for (SourceBean source : sources) {
-            if (source == null || source.getType() != 3) continue;
-            String spiderApiKey = source.getJar() + "|" + source.getApi();
-            if (!spiderApis.add(spiderApiKey)) sharedSpiderApis.add(spiderApiKey);
-        }
-        configLoadExecutor.execute(new Runnable() {
-            @Override
-            public void run() {
-                LOG.i("echo-warm-spider start");
-                int eligibleCount = 0;
-                for (SourceBean source : sources) {
-                    if (source == null || source.getType() != 3 || !source.isSearchable()) continue;
-                    if (home != null && TextUtils.equals(home.getKey(), source.getKey())) continue;
-                    // 同类 Spider 可能通过静态状态保存 ext，不能在后台预热时交替初始化。
-                    if (sharedSpiderApis.contains(source.getJar() + "|" + source.getApi())) continue;
-                    if (eligibleCount >= 10) break;
-                    eligibleCount++;
-                    String warmKey = source.getKey() + "|" + source.getApi() + "|" + source.getJar() + "|" + source.getExt();
-                    synchronized (warmedSearchSpiderKeys) {
-                        if (warmedSearchSpiderKeys.contains(warmKey)) continue;
-                        warmedSearchSpiderKeys.add(warmKey);
-                    }
-                    try {
-//                        LOG.i("echo-warm-spider load:" + warmKey);
-                        getCSP(source);
-                    } catch (Throwable th) {
-                        LOG.e("echo-warm-search-spider-error " + source.getKey() + ":" + th.getMessage());
-                    }
-                }
-            }
-        });
+        // 本地适配器按使用懒创建，不以后台预热引入网络或授权副作用。
     }
 
     public Spider getPyCSP(String url) {
@@ -1689,16 +1670,9 @@ public class ApiConfig {
 
     private List<SourceBean> searchSourceBeanList;
     public List<SourceBean> getSearchSourceBeanList() {
-        if(searchSourceBeanList.isEmpty()){
-            LOG.i("echo-第一次getSearchSourceBeanList");
-            searchSourceBeanList = new ArrayList<>();
-            for (SourceBean bean : sourceBeanList.values()) {
-                if (bean.isSearchable()) {
-                    searchSourceBeanList.add(bean);
-                }
-            }
-        }
-        return searchSourceBeanList;
+        List<SourceBean> result = new ArrayList<>();
+        for (SourceBean bean : sourceBeanList.values()) if (bean.isSearchable()) result.add(bean);
+        return result;
     }
 
     public List<ParseBean> getParseBeanList() {
@@ -1798,9 +1772,6 @@ public class ApiConfig {
         jarLoader.clear();
         pyLoader.clear();
         jsLoader.clear();
-        synchronized (warmedSearchSpiderKeys) {
-            warmedSearchSpiderKeys.clear();
-        }
     }
 
     public void clearSpiderCache() {

@@ -171,6 +171,12 @@
 -keepclassmembers class com.github.tvbox.osc.bean.AbsSortJson$* {
   <fields>;
 }
+# 公开文件引用会进入观看历史，私有转存账本会跨覆盖升级保存；字段名不能随R8映射变化。
+# 只保留实际经Gson持久化的四个DTO，不扩大为整个云盘模块免混淆。
+-keep class com.github.tvbox.osc.cloud.CloudReference { *; }
+-keep class com.github.tvbox.osc.cloud.TransferLedger$Data { *; }
+-keep class com.github.tvbox.osc.cloud.TransferLedger$Directory { *; }
+-keep class com.github.tvbox.osc.cloud.TransferLedger$Operation { *; }
 -keep,allowobfuscation,allowoptimization class * extends com.google.gson.reflect.TypeToken
 #xstream
 -keep class com.thoughtworks.xstream.converters.extended.SubjectConverter { *; }

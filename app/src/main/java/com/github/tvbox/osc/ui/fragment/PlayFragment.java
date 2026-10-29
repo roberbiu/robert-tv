@@ -52,6 +52,10 @@ import com.github.tvbox.osc.bean.ParseBean;
 import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.bean.Subtitle;
 import com.github.tvbox.osc.bean.VodInfo;
+import com.github.tvbox.osc.cloud.CloudException;
+import com.github.tvbox.osc.cloud.CloudProvider;
+import com.github.tvbox.osc.cloud.CloudReference;
+import com.github.tvbox.osc.playback.ProxyRouter;
 import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.dlna.CastVideo;
 import com.github.tvbox.osc.event.RefreshEvent;
@@ -67,6 +71,9 @@ import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.activity.DetailActivity;
 import com.github.tvbox.osc.ui.dialog.CastDeviceDialog;
+import com.github.tvbox.osc.ui.dialog.CloudLoginDialog;
+import com.github.tvbox.osc.ui.dialog.CloudFilePickerDialog;
+import com.github.tvbox.osc.ui.dialog.CloudQualityDialog;
 import com.github.tvbox.osc.ui.dialog.DanmuSettingDialog;
 import com.github.tvbox.osc.ui.dialog.EpisodeDialog;
 import com.github.tvbox.osc.ui.dialog.SearchDanmuDialog;
@@ -81,6 +88,8 @@ import com.github.tvbox.osc.util.ImgUtil;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.util.PlaybackActionGuard;
+import com.github.tvbox.osc.util.CloudPlaybackIdentity;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.util.SubtitleTrial;
 import com.github.tvbox.osc.util.VideoParseRuler;
@@ -151,6 +160,18 @@ public class PlayFragment extends BaseLazyFragment {
     private VodController mController;
     private SourceViewModel sourceViewModel;
     private Observer<JSONObject> playResultObserver;
+    private final PlaybackActionGuard playbackActions = new PlaybackActionGuard();
+    private PlaybackActionGuard.Ticket playbackAction;
+    private android.app.Dialog cloudDialog;
+    private boolean nextPlayUserAction;
+    private boolean cloudTransferPermitted;
+    private boolean pendingCloudInteraction;
+    private String activeMediaLease;
+    private String snapshotMediaLease;
+    private String cloudHistoryIdentity;
+    private String cloudHistoryScheduledKey;
+    private boolean playbackUiPaused;
+    private boolean pausedWhileResolving;
     private JSONObject qualityResult;
     private Handler mHandler;
     private boolean exitingPreview = false;
@@ -334,6 +355,7 @@ public class PlayFragment extends BaseLazyFragment {
         mVideoView.addOnStateChangeListener(new VideoView.SimpleOnStateChangeListener() {
             @Override
             public void onPlayStateChanged(int playState) {
+                if (playState == VideoView.STATE_ERROR && handleCloudLeaseFailure()) return;
                 if (playState == VideoView.STATE_ERROR && rollbackSubtitleTrialIfNeeded()) return;
                 if (playState == VideoView.STATE_PLAYING || playState == VideoView.STATE_BUFFERED) notifySubtitleTrialStarted();
                 if (webPlayUrl != null && isStartedPlayState(playState)) {
@@ -428,6 +450,8 @@ public class PlayFragment extends BaseLazyFragment {
 
             @Override
             public void replay(boolean replay) {
+                nextPlayUserAction = true;
+                cloudTransferPermitted = true;
                 autoRetryCount = 0;
                 hasAutoSwitchedPlayer = false;
                 triedLineFlags.clear();
@@ -467,6 +491,7 @@ public class PlayFragment extends BaseLazyFragment {
 
             @Override
             public void selectVideoTrack() {
+                if (isCloudEpisode() && showCloudQuality()) return;
                 selectMyVideoTrack();
             }
 
@@ -631,7 +656,7 @@ public class PlayFragment extends BaseLazyFragment {
                             @Override
                             public void run() {
                                 String zimuUrl = subtitle.getUrl();
-                                LOG.i("echo-Remote Subtitle Url: " + zimuUrl);
+                                LOG.i("已选择远程字幕");
                                 setSubtitle(zimuUrl);//设置字幕
                                 searchSubtitleDialog.dismiss();
                             }
@@ -655,7 +680,7 @@ public class PlayFragment extends BaseLazyFragment {
                         .withChosenListener(new ChooserDialog.Result() {
                             @Override
                             public void onChoosePath(String path, File pathFile) {
-                                LOG.i("echo-Local Subtitle Path: " + path);
+                                LOG.i("已选择本地字幕");
                                 setSubtitle(path);//设置字幕
                             }
                         })
@@ -993,25 +1018,10 @@ public class PlayFragment extends BaseLazyFragment {
 
     void playUrl(String url, HashMap<String, String> headers) {
         startSwitchLinePlayTimeout();
-        url = attachProxySiteKey(url);
-        if(!url.startsWith("data:application"))EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REFRESH, url));//更新播放地址
-        if (!Hawk.get(HawkConfig.M3U8_PURIFY, false)) {
-            goPlayUrl(url,headers);
-            return;
-        }
-        if (url.startsWith("http://127.0.0.1") || !url.contains(".m3u8")) {
-            goPlayUrl(url,headers);
-            return;
-        }
-        if(DefaultConfig.noAd(mVodInfo.playFlag)){
-            goPlayUrl(url,headers);
-            return;
-        }
-        LOG.i("echo-playM3u8:" + url);
-        mController.playM3u8(url,headers);
+        // 所有受管来源经能力租约播放；不再发布裸代理地址或全局可覆盖的M3U8内容。
+        goPlayUrl(url, headers);
     }
     public void goPlayUrl(String url, HashMap<String, String> headers) {
-        LOG.i("echo-goPlayUrl:" + url);
         if (TextUtils.isEmpty(url)) {
             handleResolvePlayUrlFailed("获取播放地址为空");
             return;
@@ -1019,7 +1029,29 @@ public class PlayFragment extends BaseLazyFragment {
         if(autoRetryCount==0)webPlayUrl=url;
         if (mActivity == null) return;
         if (!isAdded()) return;
+        try {
+            ProxyRouter router = ProxyRouter.get(requireContext());
+            if (!router.validateOwnLeaseUrl(url)) {
+                url = router.publishAnonymous(sourceKey, sourceBean == null ? "cms" : sourceBean.getAdapterId(),
+                        playbackAction == null ? 0 : playbackAction.generation(), url, headers).getLocalUrl();
+            } else {
+                if (!router.claim(url)) throw new CloudException(CloudException.Code.CANCELLED, null);
+                if (!TextUtils.equals(url, activeMediaLease) && TextUtils.equals(url, snapshotMediaLease)
+                        && !router.retain(url)) throw new CloudException(CloudException.Code.CANCELLED, null);
+            }
+            if (!TextUtils.equals(activeMediaLease, url)) {
+                releaseMediaLease(activeMediaLease);
+                activeMediaLease = url;
+            }
+            headers = null; // 上游凭据仅由本机代理持有，播放器只接收不透明能力地址。
+        } catch (CloudException failure) {
+            handleResolvePlayUrlFailed(failure.getMessage());
+            return;
+        }
+        webPlayUrl = url;
+        webHeaderMap = null;
         final String finalUrl = url;
+        final HashMap<String, String> finalHeaders = headers;
         requireActivity().runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -1030,13 +1062,17 @@ public class PlayFragment extends BaseLazyFragment {
                         try {
                             int playerType = mVodPlayerCfg.getInt("pl");
                             if (playerType >= 10) {
+                                if (isCloudEpisode()) {
+                                    setTip("网盘版本请使用应用内播放器", false, true);
+                                    return;
+                                }
                                 mVideoView.release();
                                 VodInfo.VodSeries vs = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
                                 String playTitle = mVodInfo.name + " " + vs.name;
                                 setTip("调用外部播放器" + PlayerHelper.getPlayerName(playerType) + "进行播放", true, false);
                                 boolean callResult = false;
                                 long progress = getSavedProgress(progressKey);
-                                callResult = PlayerHelper.runExternalPlayer(playerType, requireActivity(), url, playTitle, playSubtitle, headers, progress);
+                                callResult = PlayerHelper.runExternalPlayer(playerType, requireActivity(), url, playTitle, playSubtitle, finalHeaders, progress);
                                 setTip("调用外部播放器" + PlayerHelper.getPlayerName(playerType) + (callResult ? "成功" : "失败"), callResult, !callResult);
                                 return;
                             }
@@ -1062,8 +1098,8 @@ public class PlayFragment extends BaseLazyFragment {
                             mVideoView.release();
                         }
                         mVideoView.setProgressKey(progressKey);
-                        if (headers != null) {
-                            mVideoView.setUrl(url, headers);
+                        if (finalHeaders != null) {
+                            mVideoView.setUrl(url, finalHeaders);
                         } else {
                             mVideoView.setUrl(url);
                         }
@@ -1257,10 +1293,13 @@ public class PlayFragment extends BaseLazyFragment {
                 if (info != null) {
                     try {
                         if (isStalePlayResult(info)) {
+                            releaseUnclaimedLease(info);
                             LOG.i("echo-ignore stale play result");
                             return;
                         }
                         mHandler.removeMessages(MSG_RESOLVE_PLAY_URL_TIMEOUT);
+                        if (handleCloudInteraction(info)) return;
+                        if (handleTypedPlayerError(info)) return;
                         publishQuality(info);
                         webPlayUrl = null;
                         progressKey = info.optString("proKey", null);
@@ -1294,7 +1333,7 @@ public class PlayFragment extends BaseLazyFragment {
                         String playUrl = info.optString("playUrl", "");
                         String flag = info.optString("flag");
                         Object rawUrl = info.opt("url");
-                        String url = rawUrl instanceof JSONArray ? rawUrl.toString() : String.valueOf(rawUrl);
+                        String url = rawUrl == null || rawUrl == JSONObject.NULL ? "" : rawUrl.toString();
                         if(url.startsWith("[")){
                             url=mController.firstUrlByArray(url);
                         }
@@ -1304,7 +1343,7 @@ public class PlayFragment extends BaseLazyFragment {
                         }
                         playArtwork = artwork;
                         mVideoView.setArtwork(playArtwork);
-                        String msg = info.optString("msg", "");
+                        String msg = info.optString("message", info.optString("msg", ""));
                         if (!TextUtils.isEmpty(msg)) {
                             handleResolvePlayUrlFailed(msg);
                             return;
@@ -1351,6 +1390,7 @@ public class PlayFragment extends BaseLazyFragment {
 
     public boolean selectQuality(int position) {
         if (qualityResult == null) return false;
+        if (qualityResult.has("cloud_quality_options")) return showCloudQuality();
         try {
             JSONArray urls = new JSONArray(qualityResult.optString("url"));
             String url = urls.optString(position * 2 + 1);
@@ -1374,7 +1414,13 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void publishQuality(JSONObject info) {
+        if (mController != null) mController.setCloudQualityAvailable(info != null && info.has("cloud_quality_options"));
         try {
+            if (info != null && info.has("cloud_quality_options") && info.has("cloud_ref")) {
+                qualityResult = new JSONObject(info.toString());
+                EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_PLAY_QUALITY, qualityResult));
+                return;
+            }
             JSONArray urls = new JSONArray(info == null ? "" : info.optString("url"));
             if (urls.length() < 4 || urls.length() % 2 != 0) throw new JSONException("invalid quality urls");
             qualityResult = new JSONObject(info.toString());
@@ -1404,7 +1450,213 @@ public class PlayFragment extends BaseLazyFragment {
         });
     }
 
+    /** 全屏/播放按钮是明确的用户动作；详情自动预览不会打开授权窗口。 */
+    public void requestExplicitPlay() {
+        if (!isAdded() || mVodInfo == null) return;
+        if (!isResumed() || isHidden()) return;
+        playbackUiPaused = false;
+        pausedWhileResolving = false;
+        if (!pendingCloudInteraction && mVideoView != null && mVideoView.isPlaying()) return;
+        nextPlayUserAction = true;
+        cloudTransferPermitted = true;
+        play(false);
+    }
+
+    private boolean canPromptCloud(PlaybackActionGuard.Ticket ticket) {
+        return playbackActions.canPrompt(ticket, isAdded() && isResumed() && !isHidden()
+                && getActivity() != null && !getActivity().isFinishing());
+    }
+
+    private boolean isCloudEpisode() {
+        VodInfo.VodSeries episode = mVodInfo == null ? null : getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex);
+        return episode != null && episode.url != null && episode.url.startsWith(CloudReference.PREFIX);
+    }
+
+    private boolean handleCloudInteraction(JSONObject info) {
+        String action = info.optString("cloud_action", "");
+        String error = info.optString("error_code", "");
+        boolean authorization = "authorize".equals(action) || "AUTH_REQUIRED".equals(error) || "SESSION_EXPIRED".equals(error);
+        if (action.isEmpty() && !authorization) return false;
+        cancelPlayTimeout();
+        pendingCloudInteraction = true;
+        final PlaybackActionGuard.Ticket ticket = playbackAction;
+        if (!canPromptCloud(ticket) && rollbackSubtitleTrialIfNeeded()) return true;
+        if (!canPromptCloud(ticket) || "user_play_required".equals(action)) {
+            setTip(authorization ? "此版本需要网盘授权，按播放继续；也可选择无需授权的来源" : "按播放选择实际文件与集数", false, false);
+            return true;
+        }
+        try {
+            CloudReference reference = CloudReference.decode(info.optString("cloud_ref", ""));
+            if (authorization) {
+                setTip("等待网盘扫码授权", false, false);
+                cloudDialog = new CloudLoginDialog(requireContext(), CloudProvider.fromId(reference.provider), () -> {
+                    if (!canPromptCloud(ticket)) return;
+                    cloudDialog = null;
+                    nextPlayUserAction = true;
+                    play(false);
+                });
+            } else if ("select_file".equals(action)) {
+                setTip("请选择实际文件与集数", false, false);
+                cloudDialog = new CloudFilePickerDialog(requireContext(), reference, new CloudFilePickerDialog.Listener() {
+                    @Override public void onSelected(CloudFilePickerDialog.Selection selection) {
+                        if (!canPromptCloud(ticket)) return;
+                        cloudDialog = null;
+                        List<VodInfo.VodSeries> episodes = new ArrayList<>();
+                        int selected = 0;
+                        for (CloudFilePickerDialog.Choice choice : selection.choices) {
+                            if (choice.shareFileId.equals(selection.selected.shareFileId)) selected = episodes.size();
+                            episodes.add(new VodInfo.VodSeries(choice.displayName, choice.reference));
+                        }
+                        // 保留显式选择目录/翻页入口；它不是虚构的下一集，也不会自动弹窗。
+                        episodes.add(new VodInfo.VodSeries("选择其他文件 / 目录 / 页", selection.folderReference));
+                        mVodInfo.seriesMap.put(mVodInfo.playFlag, episodes);
+                        mVodInfo.playIndex = selected;
+                        Activity activity = getActivity();
+                        if (activity instanceof DetailActivity) ((DetailActivity) activity).onCloudFilesSelected(mVodInfo);
+                        nextPlayUserAction = true;
+                        cloudTransferPermitted = true;
+                        play(false);
+                    }
+                    @Override public void onError(CloudException failure) {
+                        if (!canPromptCloud(ticket)) return;
+                        cloudDialog = null;
+                        setTip(failure.getMessage() + "，按播放重试或切换来源", false, false);
+                    }
+                });
+            } else {
+                setTip("此版本需要手动选择播放", false, false);
+                return true;
+            }
+            cloudDialog.show(); // 对话框自行负责取消轮询和后台线程，宿主不替换其dismiss监听。
+        } catch (CloudException | IllegalArgumentException failure) {
+            setTip("文件信息无效，请返回详情选择其他线路", false, true);
+        }
+        return true;
+    }
+
+    private boolean showCloudQuality() {
+        if (!isAdded() || qualityResult == null || !isCloudEpisode()) return false;
+        try {
+            CloudReference ref = CloudReference.decode(qualityResult.optString("cloud_ref"));
+            JSONArray options = qualityResult.optJSONArray("cloud_quality_options");
+            List<String> available = new ArrayList<>();
+            if (options != null) for (int i = 0; i < options.length(); i++) available.add(options.optString(i));
+            dismissCloudDialog();
+            final PlaybackActionGuard.Ticket ticket = playbackActions.begin(getCurrentPlaybackIdentity(), true);
+            playbackAction = ticket;
+            cloudDialog = new CloudQualityDialog(requireContext(), ref, available, updated -> {
+                if (!canPromptCloud(ticket)) return;
+                cloudDialog = null;
+                VodInfo.VodSeries episode = getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex);
+                if (episode == null) return;
+                episode.url = updated.encode();
+                nextPlayUserAction = true;
+                play(false);
+            });
+            cloudDialog.show();
+            return true;
+        } catch (CloudException failure) { return false; }
+    }
+
+    private boolean handleTypedPlayerError(JSONObject info) {
+        String code = info.optString("error_code", "");
+        if (code.isEmpty()) return false;
+        String message = info.optString("message", info.optString("msg", "此版本暂时无法播放"));
+        if ("ENTITLEMENT_REQUIRED".equals(code) && isCloudEpisode()) {
+            cancelPlayTimeout();
+            pendingCloudInteraction = true;
+            if (qualityResult == null) {
+                try {
+                    JSONObject recovery = new JSONObject();
+                    recovery.put("cloud_ref", info.optString("cloud_ref", getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex).url));
+                    recovery.put("cloud_quality", "original");
+                    recovery.put("cloud_quality_options", new JSONArray());
+                    publishQuality(recovery);
+                } catch (JSONException ignored) { }
+            }
+            setTip(message + "，可在清晰度中改选自动均衡，或切换来源", false, false);
+            return true;
+        }
+        if ("CANCELLED".equals(code)) { cancelPlayTimeout(); return true; }
+        handleResolvePlayUrlFailed(message);
+        return true;
+    }
+
+    private void dismissCloudDialog() {
+        android.app.Dialog current = cloudDialog;
+        cloudDialog = null;
+        if (current != null && current.isShowing()) current.dismiss();
+    }
+
+    private void cancelCloudInteraction() {
+        playbackActions.invalidate();
+        dismissCloudDialog();
+        if (sourceViewModel != null) sourceViewModel.cancelPlayRequest();
+    }
+
+    private void releaseMediaLease(String url) {
+        if (url == null || getContext() == null) return;
+        try { ProxyRouter.get(getContext()).release(url); } catch (CloudException ignored) { }
+    }
+
+    private void releaseUnclaimedLease(JSONObject result) {
+        String url = result.optString("url", "");
+        if (!TextUtils.equals(url, activeMediaLease) && !TextUtils.equals(url, snapshotMediaLease)) releaseMediaLease(url);
+    }
+
+    private void protectSnapshotLease(String url) {
+        if (TextUtils.equals(url, snapshotMediaLease) || getContext() == null) return;
+        releaseMediaLease(snapshotMediaLease);
+        snapshotMediaLease = null;
+        try { if (ProxyRouter.get(getContext()).retain(url)) snapshotMediaLease = url; } catch (CloudException ignored) { }
+    }
+
+    public void releaseProtectedSnapshot() {
+        releaseMediaLease(snapshotMediaLease);
+        snapshotMediaLease = null;
+    }
+
+    private void resetQualityUnlessSameCloudFile() {
+        try {
+            if (qualityResult != null && isCloudEpisode()) {
+                CloudReference old = CloudReference.decode(qualityResult.optString("cloud_ref"));
+                CloudReference current = CloudReference.decode(getCurrentSeries(mVodInfo.playFlag, mVodInfo.playIndex).url);
+                if (CloudPlaybackIdentity.progressKey(old).equals(CloudPlaybackIdentity.progressKey(current))) return;
+            }
+        } catch (CloudException | IllegalArgumentException ignored) { }
+        publishQuality(null);
+    }
+
+    private boolean handleCloudLeaseFailure() {
+        if (!isCloudEpisode() || TextUtils.isEmpty(activeMediaLease) || getContext() == null) return false;
+        try {
+            CloudException failure = ProxyRouter.get(getContext()).lastFailure(activeMediaLease);
+            if (failure == null || (failure.code != CloudException.Code.AUTH_REQUIRED && failure.code != CloudException.Code.SESSION_EXPIRED
+                    && failure.code != CloudException.Code.ENTITLEMENT_REQUIRED)) return false;
+            if (rollbackSubtitleTrialIfNeeded()) return true;
+            pendingCloudInteraction = true;
+            cancelPlayTimeout();
+            setTip(failure.getMessage() + "，按播放重试，或切换清晰度和来源", false, false);
+            return true;
+        } catch (CloudException ignored) { return false; }
+    }
+
+    private void confirmCloudHistory(PlaybackActionGuard.Ticket ticket, String key, int attempts) {
+        if (!playbackActions.isCurrent(ticket) || !TextUtils.equals(key, progressKey) || !isAdded()) return;
+        if (mVideoView != null && mVideoView.isPlaying() && hasPlaybackProgress(mVideoView.getCurrentPosition())) {
+            cloudHistoryIdentity = key;
+            Activity activity = getActivity();
+            if (activity instanceof DetailActivity) {
+                if (isCloudEpisode()) ((DetailActivity) activity).onCloudPlaybackConfirmed(mVodInfo);
+                ((DetailActivity) activity).onPlaybackProgressConfirmed(getCurrentPlaybackIdentity());
+            }
+        } else if (attempts > 0) mHandler.postDelayed(() -> confirmCloudHistory(ticket, key, attempts - 1), 1000);
+    }
+
     boolean isStalePlayResult(JSONObject info) {
+        if (playbackAction != null && !playbackActions.isCurrent(playbackAction)) return true;
+        if (info.has("playback_generation") && (playbackAction == null
+                || info.optLong("playback_generation", -1) != playbackAction.generation())) return true;
         if (mVodInfo == null || mVodInfo.seriesMap == null || TextUtils.isEmpty(progressKey)) return false;
         String resultKey = info.optString("proKey", "");
         if (!TextUtils.isEmpty(resultKey) && !progressKey.equals(resultKey)) return true;
@@ -1426,6 +1678,12 @@ public class PlayFragment extends BaseLazyFragment {
         ApiConfig.get().setCurrentPlaySourceKey(sourceKey);
         initPlayerCfg();
         triedLineFlags.clear();
+        nextPlayUserAction = bundle.getBoolean("explicit_play", false);
+        if (nextPlayUserAction && isResumed() && !isHidden()) {
+            playbackUiPaused = false;
+            pausedWhileResolving = false;
+        }
+        cloudTransferPermitted = nextPlayUserAction;
         play(false);
     }
 
@@ -1443,6 +1701,7 @@ public class PlayFragment extends BaseLazyFragment {
         VodInfo frozenInfo = gson.fromJson(gson.toJson(mVodInfo), VodInfo.class);
         long position = SubtitleTrial.snapshotPosition(mVideoView == null ? -1 : mVideoView.getCurrentPosition(),
                 getSavedProgress(progressKey));
+        protectSnapshotLease(webPlayUrl);
         return new PlaybackSnapshot(frozenInfo, sourceKey, progressKey, webPlayUrl,
                 webHeaderMap == null ? null : new HashMap<>(webHeaderMap), position, playSubtitle);
     }
@@ -1669,6 +1928,12 @@ public class PlayFragment extends BaseLazyFragment {
 
     @Override
     public void onPause() {
+        playbackUiPaused = true;
+        pausedWhileResolving = mVodInfo != null && TextUtils.isEmpty(webPlayUrl);
+        cloudTransferPermitted = false;
+        cancelPlayTimeout();
+        stopParse();
+        cancelCloudInteraction();
         super.onPause();
         if (mVideoView != null && !exitingPreview && !hasAudioOnlyPlayback()) {
             mVideoView.pause();
@@ -1678,19 +1943,45 @@ public class PlayFragment extends BaseLazyFragment {
     @Override
     public void onResume() {
         super.onResume();
+        playbackUiPaused = false;
         exitingPreview = false;
+        if (pausedWhileResolving) {
+            pausedWhileResolving = false;
+            pendingCloudInteraction = isCloudEpisode();
+            setTip("按播放继续，或选择其他来源", false, false);
+        }
+        if (mVodInfo != null && !pendingCloudInteraction && !TextUtils.isEmpty(webPlayUrl)
+                && !playbackActions.isCurrent(playbackAction)) {
+            playbackAction = playbackActions.begin(getCurrentPlaybackIdentity(), false);
+            cloudHistoryScheduledKey = null;
+        }
         if (mVideoView != null) {
             mVideoView.resume();
+            if (!pendingCloudInteraction && !TextUtils.isEmpty(webPlayUrl)) markPlaybackStarted();
         }
     }
 
     @Override
     public void onHiddenChanged(boolean hidden) {
         if (hidden) {
+            playbackUiPaused = true;
+            pausedWhileResolving = mVodInfo != null && TextUtils.isEmpty(webPlayUrl);
+            cloudTransferPermitted = false;
+            cancelPlayTimeout();
+            stopParse();
+            cancelCloudInteraction();
             if (mVideoView != null) {
                 mVideoView.pause();
             }
         } else {
+            playbackUiPaused = !isResumed();
+            if (!playbackUiPaused && !TextUtils.isEmpty(webPlayUrl)) {
+                playbackAction = playbackActions.begin(getCurrentPlaybackIdentity(), false);
+                cloudHistoryScheduledKey = null;
+            } else if (!playbackUiPaused && pausedWhileResolving) {
+                pausedWhileResolving = false;
+                setTip("按播放继续，或选择其他来源", false, false);
+            }
             if (mVideoView != null) {
                 mVideoView.resume();
             }
@@ -1700,6 +1991,11 @@ public class PlayFragment extends BaseLazyFragment {
 
     @Override
     public void onDestroyView() {
+        cancelCloudInteraction();
+        releaseMediaLease(activeMediaLease);
+        activeMediaLease = null;
+        releaseMediaLease(snapshotMediaLease);
+        snapshotMediaLease = null;
         audioPlayback = false;
         switchingPlayback = false;
         MusicPlaybackService.stop(getContext(), this);
@@ -1730,6 +2026,8 @@ public class PlayFragment extends BaseLazyFragment {
     private SourceBean sourceBean;
 
     public void playNext(boolean isProgress) {
+        if (playbackUiPaused) return;
+        nextPlayUserAction = !isProgress;
         triedLineFlags.clear();
         boolean hasNext;
         if (mVodInfo == null || mVodInfo.seriesMap.get(mVodInfo.playFlag) == null) {
@@ -1748,6 +2046,8 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     public void playPrevious() {
+        if (playbackUiPaused) return;
+        nextPlayUserAction = true;
         triedLineFlags.clear();
         boolean hasPre = true;
         if (mVodInfo == null || mVodInfo.seriesMap.get(mVodInfo.playFlag) == null) {
@@ -1793,6 +2093,7 @@ public class PlayFragment extends BaseLazyFragment {
                         || actualPosition >= episodes.size() || actualPosition == mVodInfo.playIndex) return;
                 triedLineFlags.clear();
                 mVodInfo.playIndex = actualPosition;
+                nextPlayUserAction = true;
                 reusePlayerOnSwitch = true;
                 play(false);
             }
@@ -1828,6 +2129,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     boolean autoRetry() {
+        if (playbackUiPaused) return false;
         if (rollbackSubtitleTrialIfNeeded()) return true;
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastRetryTime > 60_000){
@@ -1866,6 +2168,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     boolean tryNextLineIfEnabled() {
+        if (playbackUiPaused) return false;
         if (rollbackSubtitleTrialIfNeeded()) return true;
         restoreAutoSwitchedPlayer();
         if (allowAutoSwitchLine && Hawk.get(HawkConfig.AUTO_SWITCH_LINE, true)) return tryNextLine();
@@ -2052,6 +2355,14 @@ public class PlayFragment extends BaseLazyFragment {
 
     public void play(boolean reset) {
         if(mVodInfo==null)return;
+        if (playbackUiPaused) { pausedWhileResolving = true; return; }
+        dismissCloudDialog();
+        playbackAction = playbackActions.begin(getCurrentPlaybackIdentity(), nextPlayUserAction);
+        if (nextPlayUserAction) cloudTransferPermitted = true;
+        nextPlayUserAction = false;
+        pendingCloudInteraction = false;
+        cloudHistoryIdentity = null;
+        cloudHistoryScheduledKey = null;
         Activity activity = getActivity();
         if (activity instanceof DetailActivity) {
             ((DetailActivity) activity).onSubtitlePlaybackTargetChanged(getCurrentPlaybackIdentity());
@@ -2066,6 +2377,7 @@ public class PlayFragment extends BaseLazyFragment {
         playArtwork = "";
         exitingPreview = false;
         VodInfo.VodSeries vs = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
+        resetQualityUnlessSameCloudFile();
         EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REFRESH, mVodInfo));
         if (reusePlayer) {
             mPlayLoadTip.setVisibility(View.GONE);
@@ -2103,9 +2415,20 @@ public class PlayFragment extends BaseLazyFragment {
                 mVideoView.release();
             }
         }
+        releaseMediaLease(activeMediaLease);
+        activeMediaLease = null;
         ImgUtil.clearMemoryCache();
         subtitleCacheKey = mVodInfo.sourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex+ "-" + vs.name + "-subt";
         progressKey = mVodInfo.sourceKey + mVodInfo.id + mVodInfo.playFlag + mVodInfo.playIndex + vs.name;
+        if (vs.url != null && vs.url.startsWith(CloudReference.PREFIX)) {
+            try {
+                CloudReference ref = CloudReference.decode(vs.url);
+                if (ref.isFile()) {
+                    progressKey = CloudPlaybackIdentity.progressKey(ref);
+                    subtitleCacheKey = progressKey + "-subt";
+                }
+            } catch (CloudException ignored) { }
+        }
         startResolvePlayUrlTimeout();
         //重新播放清除现有进度
         if (reset) {
@@ -2168,7 +2491,8 @@ public class PlayFragment extends BaseLazyFragment {
             mController.showParse(false);
             return;
         }
-        sourceViewModel.getPlay(sourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey);
+        sourceViewModel.getPlay(sourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey,
+                cloudTransferPermitted, playbackAction.generation());
     }
 
     private void inheritProgressIfNeeded() {
@@ -2364,6 +2688,10 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     public void pauseForHidden() {
+        playbackUiPaused = true;
+        pausedWhileResolving = true;
+        cloudTransferPermitted = false;
+        cancelCloudInteraction();
         cancelPlayTimeout();
         stopParse();
         playbackStarted = false;
@@ -2373,6 +2701,8 @@ public class PlayFragment extends BaseLazyFragment {
         }
         mController.stopOther();
         resetDanmuState();
+        releaseMediaLease(activeMediaLease);
+        activeMediaLease = null;
         webPlayUrl = null;
         webHeaderMap = null;
         initParseLoadFound();
@@ -2381,6 +2711,13 @@ public class PlayFragment extends BaseLazyFragment {
     void markPlaybackStarted() {
         playbackStarted = true;
         cancelPlayTimeout();
+        if (!TextUtils.equals(cloudHistoryIdentity, progressKey)
+                && !TextUtils.equals(cloudHistoryScheduledKey, progressKey)) {
+            final PlaybackActionGuard.Ticket expected = playbackAction;
+            final String key = progressKey;
+            cloudHistoryScheduledKey = key;
+            mHandler.postDelayed(() -> confirmCloudHistory(expected, key, 30), 1200);
+        }
     }
 
     boolean isPlaybackStarted() {
@@ -2411,7 +2748,7 @@ public class PlayFragment extends BaseLazyFragment {
 
     void handleResolvePlayUrlFailed(String err) {
         if (rollbackSubtitleTrialIfNeeded()) return;
-        LOG.i("echo-resolvePlayUrl failed, try next line: " + err);
+        LOG.i("播放解析失败，按策略尝试其他线路");
         if (sourceViewModel != null) sourceViewModel.cancelPlayRequest();
         stopParse();
         if (tryNextLineIfEnabled()) return;
@@ -2990,7 +3327,7 @@ public class PlayFragment extends BaseLazyFragment {
         @SuppressLint("WebViewClientOnReceivedSslError")
         @Override
         public void onReceivedSslError(WebView webView, SslErrorHandler sslErrorHandler, SslError sslError) {
-            sslErrorHandler.proceed();
+            sslErrorHandler.cancel();
         }
 
         @Override
@@ -3011,7 +3348,7 @@ public class PlayFragment extends BaseLazyFragment {
         @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
-            LOG.i("echo-onPageFinished url:" + url);
+            LOG.i("播放解析页面已完成");
             if(!url.equals("about:blank")){
                 mController.evaluateScript(sourceBean,url,view,null);
             }
@@ -3027,7 +3364,7 @@ public class PlayFragment extends BaseLazyFragment {
 
             boolean isFilter = VideoParseRuler.isFilter(webUrl, url);
             if (isFilter) {
-                LOG.i( "shouldInterceptLoadRequest filter:" + url);
+                LOG.i("已过滤非媒体请求");
                 return null;
             }
 
@@ -3043,7 +3380,7 @@ public class PlayFragment extends BaseLazyFragment {
                 if (checkVideoFormat(url)) {
                     loadFoundVideoUrls.add(url);
                     loadFoundVideoUrlsHeader.put(url, headers);
-                    LOG.i("echo-loadFoundVideoUrl:" + url );
+                    LOG.i("已识别媒体请求");
                     if (loadFoundCount.incrementAndGet() == 1) {
                         stopLoadWebView(false);
                         SuperParse.stopJsonJx();
@@ -3073,7 +3410,7 @@ public class PlayFragment extends BaseLazyFragment {
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
             String url = request.getUrl().toString();
-            LOG.i("echo-shouldInterceptRequest url:" + url);
+            LOG.i("检查播放解析请求");
             HashMap<String, String> webHeaders = new HashMap<>();
             Map<String, String> hds = request.getRequestHeaders();
             if (hds != null && hds.keySet().size() > 0) {
@@ -3182,7 +3519,7 @@ public class PlayFragment extends BaseLazyFragment {
         @Override
         public void onLoadFinished(XWalkView view, String url) {
             super.onLoadFinished(view, url);
-            LOG.i("echo-onLoadFinished url:" + url);
+            LOG.i("播放解析页面已完成");
             if(!url.equals("about:blank")){
                 mController.evaluateScript(sourceBean,url,null,view);
             }
@@ -3196,7 +3533,7 @@ public class PlayFragment extends BaseLazyFragment {
         @Override
         public XWalkWebResourceResponse shouldInterceptLoadRequest(XWalkView view, XWalkWebResourceRequest request) {
             String url = request.getUrl().toString();
-            LOG.i("echo-shouldInterceptLoadRequest url:" + url);
+            LOG.i("检查播放解析请求");
             // suppress favicon requests as we don't display them anywhere
             if (url.endsWith("/favicon.ico")) {
                 if (url.startsWith("http://127.0.0.1")) {
@@ -3207,7 +3544,7 @@ public class PlayFragment extends BaseLazyFragment {
 
             boolean isFilter = VideoParseRuler.isFilter(webUrl, url);
             if (isFilter) {
-                LOG.i( "shouldInterceptLoadRequest filter:" + url);
+                LOG.i("已过滤非媒体请求");
                 return null;
             }
 
@@ -3233,7 +3570,7 @@ public class PlayFragment extends BaseLazyFragment {
                     }
                     loadFoundVideoUrls.add(url);
                     loadFoundVideoUrlsHeader.put(url, webHeaders);
-                    LOG.i("echo-loadFoundVideoUrl:" + url );
+                    LOG.i("已识别媒体请求");
                     if (loadFoundCount.incrementAndGet() == 1) {
                         stopLoadWebView(false);
                         SuperParse.stopJsonJx();

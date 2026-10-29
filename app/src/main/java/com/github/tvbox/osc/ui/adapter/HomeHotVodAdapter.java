@@ -25,9 +25,15 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
     private int defaultWidth;
     private final ImgUtil.Style style;
     private String tvRateValue;
+    private final boolean historyMode;
 
     public HomeHotVodAdapter(ImgUtil.Style style, String tvRate) {
+        this(style, tvRate, false);
+    }
+
+    public HomeHotVodAdapter(ImgUtil.Style style, String tvRate, boolean historyMode) {
         super(R.layout.item_user_hot_vod, new ArrayList<>());
+        this.historyMode = historyMode;
         if (style != null) {
             this.defaultWidth = ImgUtil.getStyleDefaultWidth(style);
         }
@@ -41,9 +47,9 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
         tvDel.setVisibility(HawkConfig.hotVodDelete ? View.VISIBLE : View.GONE);
 
         TextView tvRate = helper.getView(R.id.tvRate);
-        if (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 2) {
+        if (historyMode || Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 2) {
             SourceBean bean = ApiConfig.get().getSource(item.sourceKey);
-            tvRateValue = bean != null ? bean.getName() : "";
+            tvRateValue = bean != null ? bean.getName() : "来源暂不可用";
         }
         tvRate.setText(tvRateValue);
 

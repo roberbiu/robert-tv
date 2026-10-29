@@ -21,6 +21,11 @@ public class SourceBean {
     private String clickSelector; // 需要点击播放的嗅探站点selector   ddrk.me;#id
     private String style; // 展示风格
     private String authorization = "unknown"; // none 仅代表不要求账号授权，不保证可播
+    private String adapterId = "cms";
+    private int configRevision = 1;
+    private String countryFilterMode = "none";
+    private int priority = 20;
+    private String qualityStatus = "unverified";
 
     private String safeString(String value) {
         return value == null ? "" : value;
@@ -151,4 +156,15 @@ public class SourceBean {
         String value = authorization == null ? "unknown" : authorization.trim().toLowerCase(Locale.ROOT);
         this.authorization = "none".equals(value) || "required".equals(value) ? value : "unknown";
     }
+
+    public String getAdapterId() { return safeString(adapterId); }
+    public void setAdapterId(String adapterId) { this.adapterId = safeString(adapterId); }
+    public int getConfigRevision() { return configRevision; }
+    public void setConfigRevision(int configRevision) { this.configRevision = Math.max(1, configRevision); }
+    public String getCountryFilterMode() { return safeString(countryFilterMode); }
+    public void setCountryFilterMode(String mode) { this.countryFilterMode = safeString(mode); }
+    public int getPriority() { return priority; }
+    public void setPriority(int priority) { this.priority = Math.max(0, Math.min(100, priority)); }
+    public String getQualityStatus() { return safeString(qualityStatus); }
+    public void setQualityStatus(String status) { this.qualityStatus = safeString(status); }
 }

@@ -1,4 +1,4 @@
-name: Robert影视构建
+name: 榴榴芙芙影视构建
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
       - name: 保存单 APK 测试包
         uses: actions/upload-artifact@v4
         with:
-          name: RobertTV-debug
+          name: LiuliufufuTV-debug
           path: app/build/outputs/apk/java/debug/*.apk
           if-no-files-found: error
           retention-days: 14

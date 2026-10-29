@@ -16,6 +16,9 @@ import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.source.AdapterRegistry;
+import com.github.tvbox.osc.source.wogg.WoggSpider;
+import com.github.tvbox.osc.source.dm84.Dm84Spider;
 import com.kingja.loadsir.core.LoadSir;
 import com.orhanobut.hawk.Hawk;
 import com.p2p.P2PClass;
@@ -44,6 +47,9 @@ public class App extends MultiDexApplication {
         initParams();
         // OKGo
         OkGoHelper.init(); //台标获取
+        // 只注册随本APK编译的工厂；构造适配器和网络请求延迟到实际使用。
+        AdapterRegistry.get().register("wogg", WoggSpider::new);
+        AdapterRegistry.get().register("dm84", Dm84Spider::new);
         EpgUtil.init();
         // 初始化Web服务器
         ControlManager.init(this);

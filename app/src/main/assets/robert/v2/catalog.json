@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 2,
+  "name": "榴榴芙芙影视默认来源",
+  "updatedAt": "2026-10-29",
+  "profiles": [
+    {
+      "id": "cms",
+      "version": 1,
+      "sources": [
+        {
+          "id": "robert_liangzi",
+          "name": "量子",
+          "adapterId": "cms",
+          "configRevision": 1,
+          "enabled": true,
+          "api": "https://lzizy1.com/api.php/provide/vod/",
+          "authorization": "none",
+          "countryFilterMode": "verified_server",
+          "qualityStatus": "unverified",
+          "priority": 10,
+          "timeout": 15,
+          "categories": [
+            "国产剧",
+            "欧美剧",
+            "香港剧",
+            "台湾剧",
+            "韩国剧",
+            "日本剧",
+            "海外剧",
+            "泰国剧",
+            "动作片",
+            "喜剧片",
+            "爱情片",
+            "剧情片",
+            "科幻片",
+            "战争片",
+            "恐怖片",
+            "记录片",
+            "国产动漫",
+            "日韩动漫",
+            "欧美动漫",
+            "港台动漫",
+            "海外动漫",
+            "大陆综艺",
+            "港台综艺",
+            "日韩综艺",
+            "欧美综艺",
+            "动画片"
+          ]
+        },
+        {
+          "id": "robert_feifan",
+          "name": "非凡",
+          "adapterId": "cms",
+          "configRevision": 1,
+          "enabled": true,
+          "api": "http://ffzy5.tv/api.php/provide/vod/",
+          "authorization": "none",
+          "countryFilterMode": "verified_server",
+          "qualityStatus": "unverified",
+          "priority": 10,
+          "timeout": 15,
+          "categories": [
+            "国产剧",
+            "欧美剧",
+            "香港剧",
+            "台湾剧",
+            "韩国剧",
+            "日本剧",
+            "海外剧",
+            "泰国剧",
+            "动作片",
+            "喜剧片",
+            "爱情片",
+            "剧情片",
+            "科幻片",
+            "战争片",
+            "恐怖片",
+            "记录片",
+            "国产动漫",
+            "日韩动漫",
+            "欧美动漫",
+            "港台动漫",
+            "海外动漫",
+            "大陆综艺",
+            "港台综艺",
+            "日韩综艺",
+            "欧美综艺"
+          ]
+        },
+        {
+          "id": "robert_baofeng",
+          "name": "暴风",
+          "adapterId": "cms",
+          "configRevision": 1,
+          "enabled": true,
+          "api": "https://bfzyapi.com/api.php/provide/vod",
+          "authorization": "none",
+          "countryFilterMode": "none",
+          "qualityStatus": "unverified",
+          "priority": 10,
+          "timeout": 15,
+          "categories": [
+            "国产剧",
+            "欧美剧",
+            "香港剧",
+            "台湾剧",
+            "韩国剧",
+            "日本剧",
+            "海外剧",
+            "泰国剧",
+            "动作片",
+            "喜剧片",
+            "爱情片",
+            "剧情片",
+            "科幻片",
+            "战争片",
+            "恐怖片",
+            "纪录片",
+            "国产动漫",
+            "日韩动漫",
+            "欧美动漫",
+            "港台动漫",
+            "海外动漫",
+            "大陆综艺",
+            "港台综艺",
+            "日韩综艺",
+            "欧美综艺",
+            "动画片"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "selected",
+      "version": 1,
+      "sources": [
+        {
+          "id": "fty_wogg",
+          "name": "玩偶哥哥",
+          "adapterId": "wogg",
+          "configRevision": 1,
+          "enabled": true,
+          "sites": [
+            "https://www.wogg.live/",
+            "https://www.wogg.net/",
+            "https://woggpan.888484.xyz/"
+          ],
+          "authorization": "required",
+          "countryFilterMode": "none",
+          "qualityStatus": "unverified",
+          "priority": 80,
+          "timeout": 15,
+          "categories": [
+            "电影",
+            "剧集",
+            "动漫",
+            "综艺",
+            "纪录片",
+            "短剧",
+            "音乐"
+          ]
+        },
+        {
+          "id": "fty_dm84",
+          "name": "动漫巴士",
+          "adapterId": "dm84",
+          "configRevision": 1,
+          "enabled": true,
+          "sites": [
+            "https://dm84.tv/"
+          ],
+          "authorization": "unknown",
+          "countryFilterMode": "none",
+          "qualityStatus": "unverified",
+          "priority": 30,
+          "timeout": 15,
+          "categories": [
+            "国产动漫",
+            "日本动漫",
+            "欧美动漫",
+            "动画片"
+          ]
+        }
+      ]
+    }
+  ]
+}

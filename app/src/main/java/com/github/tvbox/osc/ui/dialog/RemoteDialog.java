@@ -17,6 +17,7 @@ import me.jessyan.autosize.utils.AutoSizeUtils;
 public class RemoteDialog extends BaseDialog {
     private ImageView ivQRCode;
     private TextView tvAddress;
+    private String inputSessionUrl;
 
     public RemoteDialog(@NonNull @NotNull Context context) {
         super(context);
@@ -24,12 +25,33 @@ public class RemoteDialog extends BaseDialog {
         setCanceledOnTouchOutside(false);
         ivQRCode = findViewById(R.id.ivQRCode);
         tvAddress = findViewById(R.id.tvAddress);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
         refreshQRCode();
     }
 
+    @Override
+    protected void onStop() {
+        if (inputSessionUrl != null) {
+            ControlManager.get().closeInputSession(inputSessionUrl);
+            inputSessionUrl = null;
+        }
+        super.onStop();
+    }
+
     private void refreshQRCode() {
-        String address = ControlManager.get().getAddress(false);
-        tvAddress.setText(String.format("手机/电脑扫描上方二维码或者直接浏览器访问地址\n%s", address));
-        ivQRCode.setImageBitmap(QRCodeGen.generateBitmap(address, AutoSizeUtils.mm2px(getContext(), 240), AutoSizeUtils.mm2px(getContext(), 240)));
+        try {
+            inputSessionUrl = ControlManager.get().openInputSession();
+            tvAddress.setText("在同一网络下，用手机扫码输入搜索内容\n关闭窗口后，本次连接失效");
+            ivQRCode.setImageBitmap(QRCodeGen.generateBitmap(inputSessionUrl,
+                    AutoSizeUtils.mm2px(getContext(), 240), AutoSizeUtils.mm2px(getContext(), 240)));
+        } catch (RuntimeException ignored) {
+            inputSessionUrl = null;
+            ivQRCode.setImageBitmap(null);
+            tvAddress.setText("手机辅助输入暂不可用，请返回后重试");
+        }
     }
 }

@@ -5,7 +5,6 @@ import android.animation.AnimatorSet;
 import android.animation.IntEvaluator;
 import android.animation.ObjectAnimator;
 import android.annotation.SuppressLint;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
@@ -21,11 +20,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
-import androidx.constraintlayout.widget.ConstraintLayout;
-import androidx.lifecycle.Observer;
-import androidx.lifecycle.ViewModelProvider;
-import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager.widget.ViewPager;
 
@@ -33,43 +27,32 @@ import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.base.BaseActivity;
 import com.github.tvbox.osc.base.BaseLazyFragment;
-import com.github.tvbox.osc.bean.AbsSortXml;
-import com.github.tvbox.osc.bean.Movie;
 import com.github.tvbox.osc.bean.MovieSort;
-import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.HomePageAdapter;
-import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.adapter.SortAdapter;
-import com.github.tvbox.osc.ui.dialog.SelectDialog;
-import com.github.tvbox.osc.ui.dialog.TipDialog;
 import com.github.tvbox.osc.ui.fragment.GridFragment;
+import com.github.tvbox.osc.ui.fragment.BrowseFragment;
+import com.github.tvbox.osc.ui.fragment.TrendingFragment;
+import com.github.tvbox.osc.ui.fragment.CatalogPageFragment;
+import com.github.tvbox.osc.browse.FixedNavigation;
 import com.github.tvbox.osc.ui.fragment.UserFragment;
 import com.github.tvbox.osc.ui.tv.widget.DefaultTransformer;
 import com.github.tvbox.osc.ui.tv.widget.FixedSpeedScroller;
 import com.github.tvbox.osc.ui.tv.widget.NoScrollViewPager;
 import com.github.tvbox.osc.ui.tv.widget.ViewObj;
 import com.github.tvbox.osc.util.AppManager;
-import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
-import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.HomeClock;
-import com.github.tvbox.osc.util.LOG;
-import com.github.tvbox.osc.util.MD5;
-import com.github.tvbox.osc.viewmodel.SourceViewModel;
-import com.orhanobut.hawk.Hawk;
 import com.owen.tvrecyclerview.widget.TvRecyclerView;
-import com.owen.tvrecyclerview.widget.V7GridLayoutManager;
 import com.owen.tvrecyclerview.widget.V7LinearLayoutManager;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
-import org.jetbrains.annotations.NotNull;
 
-import java.io.File;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
@@ -84,7 +67,6 @@ public class HomeActivity extends BaseActivity {
     private TextView tvName;
     private TvRecyclerView mGridView;
     private NoScrollViewPager mViewPager;
-    private SourceViewModel sourceViewModel;
     private SortAdapter sortAdapter;
     private HomePageAdapter pageAdapter;
     private View currentView;
@@ -94,11 +76,6 @@ public class HomeActivity extends BaseActivity {
     private int currentSelected = 0;
     private int sortFocused = 0;
     public View sortFocusView = null;
-    private String loadingSourceKey;
-    private String previousHomeName;
-    private SourceBean previousHomeSource;
-    private boolean homeSortLoading = false;
-    private boolean refreshHomeRec = false;
     private final Handler mHandler = new Handler();
     private long mExitTime = 0;
     private boolean eventBusRegistered = false;
@@ -122,8 +99,7 @@ public class HomeActivity extends BaseActivity {
             if (topLayout == null || isActivityUnavailable() || currentSelected != 0 || topHide != 0) {
                 return;
             }
-            // OnePlus devices may finish applying immersive mode after the first measure.
-            // Re-apply the visible top state once the final display metrics are available.
+            // 部分设备会延后应用沉浸模式，最终测量后再恢复头部可见区域。
             hideSysBar();
             ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) topLayout.getLayoutParams();
             params.topMargin = AutoSizeUtils.mm2px(HomeActivity.this, 10.0f);
@@ -151,9 +127,7 @@ public class HomeActivity extends BaseActivity {
     protected void init() {
         EventBus.getDefault().register(this);
         eventBusRegistered = true;
-        ControlManager.get().startServer();
         initView();
-        initViewModel();
         useCacheConfig = false;
         Intent intent = getIntent();
         if (intent != null && intent.getExtras() != null) {
@@ -238,8 +212,10 @@ public class HomeActivity extends BaseActivity {
                     BaseLazyFragment baseLazyFragment = fragments.get(currentSelected);
                     if ((baseLazyFragment instanceof GridFragment) && !sortAdapter.getItem(position).filters.isEmpty()) {// 弹出筛选
                         ((GridFragment) baseLazyFragment).showFilter();
+                    } else if (baseLazyFragment instanceof CatalogPageFragment) {
+                        ((CatalogPageFragment) baseLazyFragment).focusContent();
                     } else if (baseLazyFragment instanceof UserFragment) {
-                        showSiteSwitch();
+                        ((UserFragment) baseLazyFragment).focusMainSearch();
                     }
                 }
             }
@@ -250,11 +226,15 @@ public class HomeActivity extends BaseActivity {
                 if (direction == View.FOCUS_UP) {
                     BaseLazyFragment baseLazyFragment = fragments.get(sortFocused);
                     if (baseLazyFragment instanceof UserFragment) {
-                        refreshHomeSort();
+                        refreshCurrentPage();
                         return true;
                     }
                     if (baseLazyFragment instanceof GridFragment) {
                         ((GridFragment) baseLazyFragment).forceRefresh();
+                        return true;
+                    }
+                    if (baseLazyFragment instanceof CatalogPageFragment) {
+                        ((CatalogPageFragment) baseLazyFragment).refreshPage();
                         return true;
                     }
                 }
@@ -262,42 +242,16 @@ public class HomeActivity extends BaseActivity {
                     return false;
                 }
                 BaseLazyFragment baseLazyFragment = fragments.get(sortFocused);
-                if (!(baseLazyFragment instanceof GridFragment)) {
-                    return false;
-                }
+                if (baseLazyFragment instanceof CatalogPageFragment) return ((CatalogPageFragment) baseLazyFragment).focusContent();
+                if (!(baseLazyFragment instanceof GridFragment)) return false;
                 return !((GridFragment) baseLazyFragment).isLoad();
             }
         });
-        tvName.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                FastClickCheckUtil.check(v);
-                if(dataInitOk && jarInitOk){
-                    String jar=ApiConfig.get().getHomeSourceBean().getJar();
-                    String jarUrl=!jar.isEmpty()?jar:ApiConfig.get().getSpider();
-                    String jarSource = jarUrl.split(";md5;")[0];
-                    File cspCacheDir = new File(FileUtils.getFilePath() + "/csp/" + MD5.string2MD5(jarSource) + ".jar");
-                    File jarCacheDir = new File(FileUtils.getCachePath() + "/jar/" + MD5.string2MD5(jarSource) + ".jar");
-                    File jarFullCacheDir = new File(FileUtils.getCachePath() + "/jar/" + MD5.string2MD5(jarUrl) + ".jar");
-                    Toast.makeText(mContext, "缓存已清除", Toast.LENGTH_LONG).show();
-                    new Thread(() -> {
-                        try {
-                            FileUtils.deleteFile(cspCacheDir);
-                            FileUtils.deleteFile(jarCacheDir);
-                            FileUtils.deleteFile(jarFullCacheDir);
-                            FileUtils.clearSpiderCacheFiles();
-                            ApiConfig.get().clearSpiderCache();
-                            refreshHome();
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                        }
-                    }).start();
-
-                }else {
-                    jumpActivity(SettingActivity.class);
-                }
-            }
+        tvName.setOnClickListener(view -> {
+            FastClickCheckUtil.check(view);
+            jumpActivity(SettingActivity.class);
         });
+
         tvName.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
@@ -309,311 +263,108 @@ public class HomeActivity extends BaseActivity {
         //mHandler.postDelayed(mFindFocus, 500);
     }
 
-
-    private boolean skipNextUpdate = false;
-
-    private void initViewModel() {
-        sourceViewModel = new ViewModelProvider(this).get(SourceViewModel.class);
-        sourceViewModel.sortResult.observe(this, new Observer<AbsSortXml>() {
-            @Override
-            public void onChanged(AbsSortXml absXml) {
-                if (skipNextUpdate) {
-                    skipNextUpdate = false;
-                    return;
-                }
-                if (!homeSortLoading && loadingSourceKey == null) {
-                    return;
-                }
-                if (absXml != null && absXml.sourceKey != null && loadingSourceKey != null && !loadingSourceKey.equals(absXml.sourceKey)) {
-                    return;
-                }
-                SourceBean home = ApiConfig.get().getHomeSourceBean();
-                showSuccess();
-                clearHomePages();
-                List<MovieSort.SortData> newSortData;
-                if (absXml != null && absXml.classes != null && absXml.classes.sortList != null) {
-                    newSortData = DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), absXml.classes.sortList, true);
-                } else {
-                    newSortData = DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), new ArrayList<>(), true);
-                }
-                updateSortData(newSortData);
-                initViewPager(absXml);
-                updateHomeRec(absXml);
-                if (home != null && home.getName() != null && !home.getName().isEmpty()) tvName.setText(sourceTitle(home));
-                tvName.clearAnimation();
-                homeSortLoading = false;
-                loadingSourceKey = null;
-                previousHomeName = null;
-                previousHomeSource = null;
-            }
-        });
-    }
-
     private boolean dataInitOk = false;
-    private boolean jarInitOk = false;
-    private boolean searchSpiderWarmStarted = false;
-    private TipDialog mConfigErrorDialog;
+
+    private boolean configLoading;
 
     private void initData() {
-        if (dataInitOk && jarInitOk) {
-            loadHomeSort(false);
-            if (!useCacheConfig && Hawk.get(HawkConfig.DEFAULT_LOAD_LIVE, false)) {
-                jumpActivity(LivePlayActivity.class);
-            }
-            //爬虫预热 仅首次加载
-            if(!useCacheConfig)warmSearchSpidersOnce();
+        if (dataInitOk) {
+            showFixedPages();
             return;
         }
+        if (configLoading) return;
+        configLoading = true;
         tvNameAnimation();
-        showLoading();
-        if (dataInitOk && !jarInitOk) {
-            if (!ApiConfig.get().getSpider().isEmpty()) {
-                ApiConfig.get().loadJar(useCacheConfig, ApiConfig.get().getSpider(), new ApiConfig.LoadConfigCallback() {
-                    @Override
-                    public void success() {
-                        jarInitOk = true;
-                        mHandler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-//                                if (!useCacheConfig) Toast.makeText(HomeActivity.this, "自定义jar加载成功", Toast.LENGTH_SHORT).show();
-                                initData();
-                            }
-                        }, 50);
-                    }
-
-                    @Override
-                    public void notice(String msg) {
-                        mHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                Toast.makeText(HomeActivity.this, msg, Toast.LENGTH_SHORT).show();
-                            }
-                        });
-                    }
-
-                    @Override
-                    public void error(String msg) {
-                        jarInitOk = true;
-                        dataInitOk = true;
-                        mHandler.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                Toast.makeText(HomeActivity.this, msg+" jar load err", Toast.LENGTH_SHORT).show();
-                                initData();
-                            }
-                        },50);
-                    }
-                });
-            }
-            return;
-        }
         ApiConfig.get().loadConfig(useCacheConfig, new ApiConfig.LoadConfigCallback() {
             @Override
-            public void notice(String msg) {
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        Toast.makeText(HomeActivity.this, msg, Toast.LENGTH_SHORT).show();
-                    }
-                });
+            public void notice(String message) {
+                // 来源状态由各页面显示，不用全局弹窗阻塞免认证内容。
             }
 
             @Override
             public void success() {
-                dataInitOk = true;
-                if (ApiConfig.get().getSpider().isEmpty()) {
-                    jarInitOk = true;
-                }
-                mHandler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        initData();
-                    }
-                }, 50);
+                mHandler.post(() -> {
+                    if (isActivityUnavailable()) return;
+                    configLoading = false;
+                    dataInitOk = true;
+                    boolean pagesAlreadyShown = pageAdapter != null;
+                    showFixedPages();
+                    if (pagesAlreadyShown) refreshCurrentPage();
+                });
             }
 
             @Override
-            public void error(String msg) {
-                if (msg.equalsIgnoreCase("-1")) {
-                    mHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            dataInitOk = true;
-                            jarInitOk = true;
-                            initData();
-                        }
-                    });
-                    return;
-                }
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (isActivityUnavailable()) {
-                            return;
-                        }
-                        if (mConfigErrorDialog == null)
-                            mConfigErrorDialog = new TipDialog(HomeActivity.this, msg, "重试", "取消", new TipDialog.OnListener() {
-                                @Override
-                                public void left() {
-                                    mHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            dismissConfigErrorDialog();
-                                            initData();
-                                        }
-                                    });
-                                }
-
-                                @Override
-                                public void right() {
-                                    dataInitOk = true;
-                                    jarInitOk = true;
-                                    mHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            dismissConfigErrorDialog();
-                                            initData();
-                                        }
-                                    });
-                                }
-
-                                @Override
-                                public void cancel() {
-                                    dataInitOk = true;
-                                    jarInitOk = true;
-                                    mHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            dismissConfigErrorDialog();
-                                            initData();
-                                        }
-                                    });
-                                }
-                            });
-                        if (!mConfigErrorDialog.isShowing())
-                            mConfigErrorDialog.show();
-                    }
+            public void error(String message) {
+                mHandler.post(() -> {
+                    if (isActivityUnavailable()) return;
+                    configLoading = false;
+                    showFixedPages();
+                    Toast.makeText(mContext, "默认来源暂未准备好，可稍后刷新", Toast.LENGTH_SHORT).show();
                 });
             }
         }, this);
     }
 
-    private void warmSearchSpidersOnce() {
-        if (searchSpiderWarmStarted) return;
-        searchSpiderWarmStarted = true;
-        ApiConfig.get().warmSearchSpiders();
+    private void showFixedPages() {
+        tvName.clearAnimation();
+        tvName.setText(getString(R.string.app_name));
+        showSuccess();
+        if (pageAdapter != null) return;
+        List<MovieSort.SortData> tabs = new ArrayList<>();
+        for (FixedNavigation.Item item : FixedNavigation.ITEMS) tabs.add(new MovieSort.SortData(item.id, item.label));
+        sortAdapter.setNewData(tabs);
+        initViewPager();
     }
 
-    private String sourceTitle(SourceBean source) {
-        return getString(R.string.app_name) + " · " + source.getName();
-    }
-
-    private void loadHomeSort(boolean keepCurrentContent) {
-        SourceBean home = ApiConfig.get().getHomeSourceBean();
-        homeSortLoading = keepCurrentContent;
-        if (keepCurrentContent && home != null && home.getName() != null && !home.getName().isEmpty()) {
-            previousHomeName = tvName.getText() == null ? null : tvName.getText().toString();
-            tvName.setText(sourceTitle(home));
-        }
-        tvNameAnimation();
-        if (home == null) {
-            loadingSourceKey = null;
-            if (!keepCurrentContent) showLoading();
-            sourceViewModel.getSort(null);
+    private void refreshCurrentPage() {
+        if (!dataInitOk) {
+            initData();
             return;
         }
-        loadingSourceKey = home.getKey();
-        if (!keepCurrentContent) {
-            showLoading();
-        }
-        sourceViewModel.getSort(loadingSourceKey);
+        if (currentSelected < 0 || currentSelected >= fragments.size()) return;
+        BaseLazyFragment fragment = fragments.get(currentSelected);
+        if (fragment instanceof CatalogPageFragment) ((CatalogPageFragment) fragment).refreshPage();
+        else if (fragment instanceof UserFragment) ((UserFragment) fragment).refreshRecentHistory();
     }
 
-    private void initViewPager(AbsSortXml absXml) {
-        if (sortAdapter.getData().size() > 0) {
-            for (MovieSort.SortData data : sortAdapter.getData()) {
-                if (data.id.equals("my0")) {
-                    if (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) == 1 && absXml != null && absXml.videoList != null && absXml.videoList.size() > 0) {
-                        fragments.add(UserFragment.newInstance(absXml.videoList));
-                    } else {
-                        fragments.add(UserFragment.newInstance(null));
-                    }
-                } else {
-                    fragments.add(GridFragment.newInstance(data));
-                }
-            }
-            pageAdapter = new HomePageAdapter(getSupportFragmentManager(), fragments);
-            try {
-                Field field = ViewPager.class.getDeclaredField("mScroller");
-                field.setAccessible(true);
-                FixedSpeedScroller scroller = new FixedSpeedScroller(mContext, new AccelerateInterpolator());
-                field.set(mViewPager, scroller);
-                scroller.setmDuration(300);
-            } catch (Exception e) {
-            }
-            mViewPager.setPageTransformer(true, new DefaultTransformer());
-            mViewPager.setAdapter(pageAdapter);
-            mViewPager.setCurrentItem(currentSelected, false);
-        }
+    public boolean focusNavigationBar() {
+        if (sortFocusView != null && sortFocusView.requestFocus()) return true;
+        mGridView.setSelectedPosition(currentSelected);
+        return mGridView.requestFocus();
     }
 
-    private void clearHomePages() {
-        mHandler.removeCallbacks(mDataRunnable);
-        currentSelected = 0;
-        sortFocused = 0;
-        sortChange = false;
-        sortFocusView = null;
-        currentView = null;
-        if (pageAdapter != null) {
-            mViewPager.setAdapter(null);
-            pageAdapter.removeAll();
-            pageAdapter = null;
-        } else if (!fragments.isEmpty()) {
-            fragments.clear();
+    private void initViewPager() {
+        if (sortAdapter.getData().isEmpty()) return;
+        for (FixedNavigation.Item item : FixedNavigation.ITEMS) {
+            if ("my0".equals(item.id)) fragments.add(UserFragment.newInstance());
+            else if ("trending".equals(item.id)) fragments.add(TrendingFragment.newInstance());
+            else fragments.add(BrowseFragment.newInstance(item.kind, item.country));
         }
-    }
-
-    private void updateSortData(List<MovieSort.SortData> newSortData) {
-        if (newSortData == null) {
-            newSortData = new ArrayList<>();
+        pageAdapter = new HomePageAdapter(getSupportFragmentManager(), fragments);
+        try {
+            Field field = ViewPager.class.getDeclaredField("mScroller");
+            field.setAccessible(true);
+            FixedSpeedScroller scroller = new FixedSpeedScroller(mContext, new AccelerateInterpolator());
+            scroller.setmDuration(300);
+            field.set(mViewPager, scroller);
+        } catch (Exception ignored) {
         }
-        List<MovieSort.SortData> oldSortData = sortAdapter.getData();
-        if (oldSortData.isEmpty()
-                || newSortData.isEmpty()
-                || oldSortData.get(0) == null
-                || newSortData.get(0) == null
-                || !"my0".equals(oldSortData.get(0).id)
-                || !"my0".equals(newSortData.get(0).id)) {
-            sortAdapter.setNewData(newSortData);
-            return;
-        }
-        int oldTailCount = oldSortData.size() - 1;
-        if (oldTailCount > 0) {
-            oldSortData.subList(1, oldSortData.size()).clear();
-            sortAdapter.notifyItemRangeRemoved(1, oldTailCount);
-        }
-        if (newSortData.size() > 1) {
-            oldSortData.addAll(newSortData.subList(1, newSortData.size()));
-            sortAdapter.notifyItemRangeInserted(1, newSortData.size() - 1);
-        }
+        mViewPager.setPageTransformer(true, new DefaultTransformer());
+        mViewPager.setAdapter(pageAdapter);
+        mViewPager.setCurrentItem(currentSelected, false);
     }
 
     @SuppressLint("NotifyDataSetChanged")
     @Override
     public void onBackPressed() {
-        // 打断加载
-        if (homeSortLoading) {
-            cancelHomeSortLoading();
-            return;
-        }
         if (isLoading()) {
-            refreshEmpty();
+            showFixedPages();
             return;
         }
         // 如果处于 VOD 删除模式，则退出该模式并刷新界面
         if (HawkConfig.hotVodDelete) {
             HawkConfig.hotVodDelete = false;
-            UserFragment.homeHotVodAdapter.notifyDataSetChanged();
+            if (UserFragment.homeHotVodAdapter != null) UserFragment.homeHotVodAdapter.notifyDataSetChanged();
             return;
         }
 
@@ -624,6 +375,12 @@ public class HomeActivity extends BaseActivity {
         }
 
         BaseLazyFragment baseLazyFragment = this.fragments.get(this.sortFocused);
+        if (baseLazyFragment instanceof CatalogPageFragment) {
+            if (((CatalogPageFragment) baseLazyFragment).handleBack()) return;
+            if (sortFocused != 0) mGridView.setSelection(0);
+            else doExit();
+            return;
+        }
         if (baseLazyFragment instanceof GridFragment) {
             GridFragment grid = (GridFragment) baseLazyFragment;
             // 如果当前 Fragment 能恢复之前保存的 UI 状态，则直接返回
@@ -640,10 +397,12 @@ public class HomeActivity extends BaseActivity {
             } else {
                 doExit();
             }
-        } else if (baseLazyFragment instanceof UserFragment && UserFragment.tvHotList.canScrollVertically(-1)) {
+        } else if (baseLazyFragment instanceof UserFragment && UserFragment.tvHotList != null && UserFragment.tvHotList.canScrollVertically(-1)) {
             // 如果 UserFragment 列表可以向上滚动，则滚动到顶部
             UserFragment.tvHotList.scrollToPosition(0);
             this.mGridView.setSelection(0);
+        } else if (baseLazyFragment instanceof UserFragment && ((UserFragment) baseLazyFragment).handleBack()) {
+            return;
         } else {
             doExit();
         }
@@ -695,20 +454,12 @@ public class HomeActivity extends BaseActivity {
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void refresh(RefreshEvent event) {
-        if (event.type == RefreshEvent.TYPE_PUSH_URL) {
-            if (ApiConfig.get().getSource("push_agent") != null) {
-                Intent newIntent = new Intent(mContext, DetailActivity.class);
-                newIntent.putExtra("id", (String) event.obj);
-                newIntent.putExtra("sourceKey", "push_agent");
-                newIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                HomeActivity.this.startActivity(newIntent);
-            }
-        } else if (event.type == RefreshEvent.TYPE_FILTER_CHANGE) {
+        if (event.type == RefreshEvent.TYPE_FILTER_CHANGE) {
             if (currentView != null) {
                 showFilterIcon((int) event.obj);
             }
         } else if (event.type == RefreshEvent.TYPE_HOME_SOURCE_CHANGE) {
-            refreshHome(false);
+            refreshCurrentPage();
         }
     }
 
@@ -751,9 +502,11 @@ public class HomeActivity extends BaseActivity {
             } else if (event.getAction() == KeyEvent.ACTION_UP) {
                 long pressDuration = System.currentTimeMillis() - menuKeyDownTime;
                 if (pressDuration >= LONG_PRESS_THRESHOLD) {
-                    jumpActivity(SettingActivity.class);;
-                }else {
-                    showSiteSwitch();
+                    jumpActivity(SettingActivity.class);
+                }else if (currentSelected >= 0 && currentSelected < fragments.size()) {
+                    BaseLazyFragment page = fragments.get(currentSelected);
+                    if (page instanceof CatalogPageFragment) ((CatalogPageFragment) page).focusControls();
+                    else if (page instanceof UserFragment) ((UserFragment) page).focusMainSearch();
                 }
             }
         }
@@ -813,7 +566,6 @@ public class HomeActivity extends BaseActivity {
 
     @Override
     protected void onDestroy() {
-        dismissHomeDialogs();
         mHandler.removeCallbacksAndMessages(null);
         super.onDestroy();
         unregisterEventBus();
@@ -822,162 +574,15 @@ public class HomeActivity extends BaseActivity {
         }
     }
 
+    private boolean isActivityUnavailable() {
+        return isFinishing() || isDestroyed();
+    }
+
     private void unregisterEventBus() {
         if (eventBusRegistered) {
             EventBus.getDefault().unregister(this);
             eventBusRegistered = false;
         }
-    }
-
-    private SelectDialog<SourceBean> mSiteSwitchDialog;
-
-    void showSiteSwitch() {
-        if (isActivityUnavailable()) return;
-        List<SourceBean> sites = ApiConfig.get().getSwitchSourceBeanList();
-        if (sites.isEmpty()) return;
-        int select = sites.indexOf(ApiConfig.get().getHomeSourceBean());
-        if (select < 0 || select >= sites.size()) select = 0;
-        if (mSiteSwitchDialog == null) {
-            mSiteSwitchDialog = new SelectDialog<>(HomeActivity.this);
-            TvRecyclerView tvRecyclerView = mSiteSwitchDialog.findViewById(R.id.list);
-            // 根据 sites 数量动态计算列数
-            int spanCount = (int) Math.floor(sites.size() / 20.0);
-            spanCount = Math.min(spanCount, 2);
-            tvRecyclerView.setLayoutManager(new V7GridLayoutManager(mSiteSwitchDialog.getContext(), spanCount + 1));
-            // 设置对话框宽度
-            ConstraintLayout cl_root = mSiteSwitchDialog.findViewById(R.id.cl_root);
-            ViewGroup.LayoutParams clp = cl_root.getLayoutParams();
-            clp.width = AutoSizeUtils.mm2px(mSiteSwitchDialog.getContext(), 380 + 200 * spanCount);
-            mSiteSwitchDialog.setTip("请选择首页数据源");
-        }
-        mSiteSwitchDialog.setAdapter(new SelectDialogAdapter.SelectDialogInterface<SourceBean>() {
-            @Override
-            public void click(SourceBean value, int pos) {
-                dismissSiteSwitchDialog();
-                previousHomeSource = ApiConfig.get().getHomeSourceBean();
-                ApiConfig.get().setSourceBean(value);
-                refreshHome(false);
-            }
-            @Override
-            public String getDisplay(SourceBean val) {
-                return val.getName();
-            }
-        }, new DiffUtil.ItemCallback<SourceBean>() {
-            @Override
-            public boolean areItemsTheSame(@NonNull SourceBean oldItem, @NonNull SourceBean newItem) {
-                return oldItem == newItem;
-            }
-            @Override
-            public boolean areContentsTheSame(@NonNull SourceBean oldItem, @NonNull SourceBean newItem) {
-                return oldItem.getKey().equals(newItem.getKey());
-            }
-        }, sites, select);
-        if (!mSiteSwitchDialog.isShowing())
-            mSiteSwitchDialog.show();
-    }
-
-    private void refreshHome()
-    {
-        refreshHome(true);
-    }
-
-    private void refreshHomeSort() {
-        refreshHomeRec = true;
-        if (UserFragment.homeHotVodAdapter != null) {
-            UserFragment.homeHotVodAdapter.setNewData(new ArrayList<Movie.Video>());
-        }
-        SourceBean home = ApiConfig.get().getHomeSourceBean();
-        if (home != null) {
-            SourceViewModel.clearSortCache(home.getKey());
-        }
-        refreshHome(false);
-    }
-
-    private void updateHomeRec(AbsSortXml absXml) {
-        if (!refreshHomeRec) return;
-        refreshHomeRec = false;
-        if (Hawk.get(HawkConfig.HOME_REC, HawkConfig.DEFAULT_HOME_REC) != 1) return;
-        if (absXml == null || absXml.videoList == null || UserFragment.homeHotVodAdapter == null) return;
-        UserFragment.homeHotVodAdapter.setNewData(absXml.videoList);
-    }
-
-    private void refreshHome(final boolean restart)
-    {
-        if (Thread.currentThread() != android.os.Looper.getMainLooper().getThread()) {
-            mHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    refreshHome(restart);
-                }
-            });
-            return;
-        }
-        if (isActivityUnavailable()) {
-            return;
-        }
-        dismissHomeDialogs();
-        if (!restart) {
-            loadHomeSort(true);
-            return;
-        }
-        Intent intent = new Intent(getApplicationContext(), HomeActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        Bundle bundle = new Bundle();
-        bundle.putBoolean("useCache", true);
-        intent.putExtras(bundle);
-        HomeActivity.this.startActivity(intent);
-    }
-
-    private boolean isActivityUnavailable() {
-        return isFinishing() || (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed());
-    }
-
-    private void dismissHomeDialogs() {
-        dismissConfigErrorDialog();
-        dismissSiteSwitchDialog();
-    }
-
-    private void dismissConfigErrorDialog() {
-        if (mConfigErrorDialog != null) {
-            if (mConfigErrorDialog.isShowing()) {
-                mConfigErrorDialog.dismiss();
-            }
-            mConfigErrorDialog = null;
-        }
-    }
-
-    private void dismissSiteSwitchDialog() {
-        if (mSiteSwitchDialog != null) {
-            if (mSiteSwitchDialog.isShowing()) {
-                mSiteSwitchDialog.dismiss();
-            }
-            mSiteSwitchDialog = null;
-        }
-    }
-
-    private void refreshEmpty()
-    {
-        skipNextUpdate=true;
-        showSuccess();
-        cancelHomeSortLoading();
-        clearHomePages();
-        sortAdapter.setNewData(DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), new ArrayList<>(), true));
-        initViewPager(null);
-        tvName.clearAnimation();
-    }
-
-    private void cancelHomeSortLoading() {
-        homeSortLoading = false;
-        loadingSourceKey = null;
-        tvName.clearAnimation();
-        if (previousHomeSource != null) {
-            ApiConfig.get().setSourceBean(previousHomeSource);
-        }
-        if (previousHomeName != null && !previousHomeName.isEmpty()) {
-            tvName.setText(previousHomeName);
-        }
-        previousHomeSource = null;
-        previousHomeName = null;
     }
 
     private void tvNameAnimation()

@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.ui.activity;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -44,6 +45,7 @@ import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.HistoryHelper;
 import com.github.tvbox.osc.util.SearchHelper;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
+import com.github.tvbox.osc.search.SearchOutcomePolicy;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -66,6 +68,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -118,6 +121,8 @@ public class SearchActivity extends BaseActivity {
     private final List<Movie.Video> highMatchVods = new ArrayList<>();
     private boolean showHighMatchResults = false;
     private TextView tvSearchCheckboxBtn;
+    private TextView searchFailureNotice;
+    private final LinkedHashMap<String, String> searchFailures = new LinkedHashMap<>();
 
     private static HashMap<String, String> mCheckSources = null;
     private SearchCheckboxDialog mSearchCheckboxDialog = null;
@@ -180,6 +185,7 @@ public class SearchActivity extends BaseActivity {
         disableSearchHandwriting();
         tvSearch = findViewById(R.id.tvSearch);
         tvSearchCheckboxBtn = findViewById(R.id.tvSearchCheckboxBtn);
+        initSearchFailureNotice();
         tvClear = findViewById(R.id.tvClear);
         mGridView = findViewById(R.id.mGridView);
         keyboard = findViewById(R.id.keyBoardRoot);
@@ -806,6 +812,8 @@ public class SearchActivity extends BaseActivity {
             totalSearchCount.set(0);
             currentSearchToken = String.valueOf(searchTokenSeq.incrementAndGet());
             searchPaused = false;
+            searchFailures.clear();
+            updateSearchFailureNotice();
         }
         List<SourceBean> searchRequestList = new ArrayList<>();
         searchRequestList.addAll(ApiConfig.get().getSourceBeanList());
@@ -877,6 +885,7 @@ public class SearchActivity extends BaseActivity {
             return;
         }
         releaseSearchSlotAndStartNext(sourceKey, absXml.searchToken);
+        recordSearchOutcome(absXml);
         if (absXml != null && absXml.movie != null && absXml.movie.videoList != null && absXml.movie.videoList.size() > 0) {
             List<Movie.Video> exactData = new ArrayList<>();
             List<Movie.Video> highData = new ArrayList<>();
@@ -955,6 +964,7 @@ public class SearchActivity extends BaseActivity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            recordSearchOutcome(SearchOutcomePolicy.failure(sourceKey, searchToken, "TIMEOUT"));
                             finishSearchIfDone();
                         }
                     });
@@ -1152,6 +1162,70 @@ public class SearchActivity extends BaseActivity {
         }
     }
 
+    private void initSearchFailureNotice() {
+        searchFailureNotice = new TextView(this);
+        searchFailureNotice.setTextColor(0xFFFFD28A);
+        searchFailureNotice.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.ts_16));
+        searchFailureNotice.setBackgroundResource(R.drawable.shape_user_focus);
+        searchFailureNotice.setPadding(8, 6, 8, 6);
+        searchFailureNotice.setFocusable(true);
+        searchFailureNotice.setMaxLines(3);
+        searchFailureNotice.setVisibility(View.GONE);
+        searchFailureNotice.setOnClickListener(view -> showSearchFailures());
+        if (tvSearchCheckboxBtn.getParent() instanceof LinearLayout) {
+            ((LinearLayout) tvSearchCheckboxBtn.getParent()).addView(searchFailureNotice, 1,
+                    new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+    }
+
+    private void recordSearchOutcome(AbsXml data) {
+        if (data == null || !isCurrentSearchToken(data.searchToken)) return;
+        if (SearchOutcomePolicy.isFailure(data)) searchFailures.put(data.sourceKey, SearchOutcomePolicy.safeCode(data.searchErrorCode));
+        else searchFailures.remove(data.sourceKey);
+        updateSearchFailureNotice();
+    }
+
+    private String searchSourceName(String key) {
+        SourceBean source = ApiConfig.get().getSource(key);
+        return source == null ? "已停用来源" : source.getName();
+    }
+
+    private void updateSearchFailureNotice() {
+        if (searchFailureNotice == null) return;
+        StringBuilder names = new StringBuilder();
+        for (String key : searchFailures.keySet()) { if (names.length() > 0) names.append("、"); names.append(searchSourceName(key)); }
+        searchFailureNotice.setText("失败来源：" + names + " · 查看原因 / 重试");
+        searchFailureNotice.setVisibility(searchFailures.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void showSearchFailures() {
+        List<String> keys = new ArrayList<>(searchFailures.keySet());
+        if (keys.isEmpty()) return;
+        CharSequence[] labels = new CharSequence[keys.size()];
+        for (int i = 0; i < keys.size(); i++) labels[i] = searchSourceName(keys.get(i)) + " · " + searchFailures.get(keys.get(i));
+        new AlertDialog.Builder(this).setTitle("搜索失败的来源").setItems(labels, (dialog, position) -> {
+            String key = keys.get(position), code = searchFailures.get(key);
+            AlertDialog.Builder detail = new AlertDialog.Builder(this).setTitle(searchSourceName(key))
+                    .setMessage(SearchOutcomePolicy.message(code) + "（" + SearchOutcomePolicy.safeCode(code) + "）\n其他来源结果已保留。"
+                            + (allRunCount.get() > 0 ? "本轮搜索结束后可单独重试。" : ""))
+                    .setNegativeButton("关闭", null);
+            if (allRunCount.get() == 0) detail.setPositiveButton("重试该来源", (ignored, which) -> retryFailedSource(key));
+            detail.show();
+        }).setNegativeButton("关闭", null).show();
+    }
+
+    private void retryFailedSource(String key) {
+        if (allRunCount.get() > 0 || TextUtils.isEmpty(searchTitle)) return;
+        currentSearchToken = String.valueOf(searchTokenSeq.incrementAndGet());
+        pendingSearchKeys.clear(); pendingSearchKeys.add(key);
+        waitingSearchTasks.clear(); releasedSearchKeys.remove(key); startedSearchKeys.remove(key);
+        allRunCount.set(1); searchPaused = false;
+        searchFailures.remove(key); updateSearchFailureNotice();
+        if (searchTimeoutExecutor == null || searchTimeoutExecutor.isShutdown()) searchTimeoutExecutor = Executors.newSingleThreadScheduledExecutor();
+        startedSearchKeys.add(key);
+        submitDirectSearchTask(new SearchTask(key, searchTitle, currentSearchToken, false));
+    }
+
     private class SearchTask implements Runnable {
         private final String sourceKey;
         private final String title;
@@ -1187,6 +1261,7 @@ public class SearchActivity extends BaseActivity {
 
     private void cancel() {
         OkGo.getInstance().cancelTag("search");
+        if (sourceViewModel != null) sourceViewModel.cancelNativeSearchRequests();
     }
 
     @Override

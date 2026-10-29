@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.ui.activity;
 
 import android.content.Intent;
+import android.app.AlertDialog;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -11,9 +12,13 @@ import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.animation.BounceInterpolator;
 import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.lifecycle.ViewModelProvider;
@@ -28,11 +33,14 @@ import com.github.tvbox.osc.bean.Movie;
 import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.event.ServerEvent;
+import com.github.tvbox.osc.search.ExpectedWorkIdentity;
+import com.github.tvbox.osc.search.SearchOutcomePolicy;
 import com.github.tvbox.osc.ui.adapter.FastListAdapter;
 import com.github.tvbox.osc.ui.adapter.FastSearchAdapter;
 import com.github.tvbox.osc.ui.adapter.SearchWordAdapter;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.HistoryHelper;
+import com.github.tvbox.osc.util.ImgUtil;
 import com.github.tvbox.osc.util.SearchHelper;
 import com.github.tvbox.osc.util.VersionPolicy;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
@@ -50,6 +58,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -60,6 +69,8 @@ import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import me.jessyan.autosize.utils.AutoSizeUtils;
 
 /**
  * @author pj567
@@ -99,6 +110,10 @@ public class FastSearchActivity extends BaseActivity {
     private int wordListVersion = 0;
     private String selectedWordName = "";
     private HashMap<String, String> mCheckSources = null;
+    private ExpectedWorkIdentity expectedIdentity = ExpectedWorkIdentity.none();
+    private LinearLayout expectedIdentityBar;
+    private TextView searchFailureNotice;
+    private final LinkedHashMap<String, String> searchFailures = new LinkedHashMap<>();
 
     @Override
     protected int getLayoutResID() {
@@ -126,6 +141,7 @@ public class FastSearchActivity extends BaseActivity {
         EventBus.getDefault().register(this);
         llLayout = findViewById(R.id.llLayout);
         mSearchTitle = findViewById(R.id.mSearchTitle);
+        initSearchFailureNotice();
         mGridView = findViewById(R.id.mGridView);
         mGridViewWord = findViewById(R.id.mGridViewWord);
         mGridViewFilter = findViewById(R.id.mGridViewFilter);
@@ -500,11 +516,51 @@ public class FastSearchActivity extends BaseActivity {
 //                });
     }
 
+    private void updateExpectedIdentity() {
+        searchAdapter.setExpectedIdentity(expectedIdentity);
+        searchAdapterFilter.setExpectedIdentity(expectedIdentity);
+        if (expectedIdentityBar == null) {
+            ViewGroup root = (ViewGroup) mSearchTitle.getParent().getParent();
+            expectedIdentityBar = new LinearLayout(mContext);
+            expectedIdentityBar.setOrientation(LinearLayout.HORIZONTAL);
+            expectedIdentityBar.setGravity(Gravity.CENTER_VERTICAL);
+            expectedIdentityBar.setPadding(AutoSizeUtils.mm2px(mContext, 20), 0,
+                    AutoSizeUtils.mm2px(mContext, 60), AutoSizeUtils.mm2px(mContext, 8));
+            root.addView(expectedIdentityBar, 1, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        expectedIdentityBar.removeAllViews();
+        expectedIdentityBar.setVisibility(expectedIdentity.isActive() ? View.VISIBLE : View.GONE);
+        if (!expectedIdentity.isActive()) return;
+        if (!expectedIdentity.picture().isEmpty()) {
+            ImageView reference = new ImageView(mContext);
+            int width = AutoSizeUtils.mm2px(mContext, 40);
+            int height = AutoSizeUtils.mm2px(mContext, 54);
+            LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(width, height);
+            imageParams.setMargins(0, 0, AutoSizeUtils.mm2px(mContext, 12), 0);
+            expectedIdentityBar.addView(reference, imageParams);
+            reference.setContentDescription("所选作品参考封面");
+            ImgUtil.load(expectedIdentity.picture(), reference, AutoSizeUtils.mm2px(mContext, 4), width, height, "参考封面");
+        }
+        TextView label = new TextView(mContext);
+        label.setText(expectedIdentity.expectationLabel() + "\n请核对各版本的年份、类型和地区，参考封面不代表候选版本相同");
+        label.setTextColor(0xffffdfa8);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.ts_18));
+        label.setMaxLines(3);
+        expectedIdentityBar.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+    }
+
     private void initData() {
         initCheckedSourcesForSearch();
         Intent intent = getIntent();
         if (intent != null && intent.hasExtra("title")) {
             String title = intent.getStringExtra("title");
+            if (intent.hasExtra("expected_year") || intent.hasExtra("expected_type")
+                    || intent.hasExtra("expected_area") || intent.hasExtra("picture")) {
+                expectedIdentity = ExpectedWorkIdentity.of(title, intent.getIntExtra("expected_year", 0),
+                        intent.getStringExtra("expected_type"), intent.getStringExtra("expected_area"), intent.getStringExtra("picture"));
+            }
+            updateExpectedIdentity();
             showLoading();
             search(title);
         }
@@ -541,6 +597,11 @@ public class FastSearchActivity extends BaseActivity {
     }
 
     private void search(String title) {
+        // 用户改为另一分词或新的手机输入时，旧作品信息不套用到新查询。
+        if (expectedIdentity.isActive() && !expectedIdentity.appliesToSearch(title)) {
+            expectedIdentity = ExpectedWorkIdentity.none();
+            updateExpectedIdentity();
+        }
         cancel();
         showLoading();
         this.searchTitle = title;
@@ -614,6 +675,8 @@ public class FastSearchActivity extends BaseActivity {
             searchPaused = false;
             totalSearchCount.set(0);
             timedOutSearchCount.set(0);
+            searchFailures.clear();
+            updateSearchFailureNotice();
             detailFallbackSearchResults.clear();
             folderHistory.clear();
             folderHistoryFilter.clear();
@@ -735,6 +798,14 @@ public class FastSearchActivity extends BaseActivity {
 
     private void sortBalancedVersions(List<Movie.Video> videos) {
         Collections.sort(videos, (left, right) -> {
+            if (expectedIdentity.isActive()) {
+                ExpectedWorkIdentity.Assessment leftIdentity = expectedIdentity.assess(left.name, left.year, left.type, left.area);
+                ExpectedWorkIdentity.Assessment rightIdentity = expectedIdentity.assess(right.name, right.year, right.type, right.area);
+                int identityOrder = Integer.compare(leftIdentity.priority(), rightIdentity.priority());
+                if (identityOrder != 0) return identityOrder;
+                int evidenceOrder = Integer.compare(rightIdentity.sameFieldCount(), leftIdentity.sameFieldCount());
+                if (evidenceOrder != 0) return evidenceOrder;
+            }
             SourceBean leftSource = ApiConfig.get().getSource(left.sourceKey);
             SourceBean rightSource = ApiConfig.get().getSource(right.sourceKey);
             int leftScore = VersionPolicy.balancedScore(left.name, left.note,
@@ -754,6 +825,7 @@ public class FastSearchActivity extends BaseActivity {
             return;
         }
         releaseSearchSlotAndStartNext(sourceKey, absXml.searchToken);
+        recordSearchOutcome(absXml);
         String lastSourceKey = "";
         List<Movie.Video> exactData = new ArrayList<>();
         List<Movie.Video> highData = new ArrayList<>();
@@ -796,12 +868,16 @@ public class FastSearchActivity extends BaseActivity {
             return;
         }
         ArrayList<Movie.Video> candidates = new ArrayList<>();
+        ExpectedWorkIdentity selectedIdentity = ExpectedWorkIdentity.of(selectedVideo.name, selectedVideo.year,
+                selectedVideo.type, selectedVideo.area, "");
         Set<String> keys = new HashSet<>();
         for (Movie.Video video : detailFallbackSearchResults) {
             if (video == null || TextUtils.isEmpty(video.id)
                     || !VersionPolicy.canAutoSwitch(selectedVideo.name, selectedVideo.year, video.name, video.year)) {
                 continue;
             }
+            if (expectedIdentity.isActive()
+                    && !selectedIdentity.canOfferAutomaticFallback(video.name, video.year, video.type, video.area)) continue;
             String key = (video.sourceKey == null ? "" : video.sourceKey) + "|" + video.id;
             if (keys.add(key)) {
                 candidates.add(video);
@@ -867,6 +943,7 @@ public class FastSearchActivity extends BaseActivity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            recordSearchOutcome(SearchOutcomePolicy.failure(sourceKey, searchToken, "TIMEOUT"));
                             updateSearchStatus();
                             finishSearchIfDone();
                         }
@@ -1096,7 +1173,83 @@ public class FastSearchActivity extends BaseActivity {
             firstLine = "\u641c\u6e90 " + started + "/" + total;
             secondLine = "\u7ed3\u679c " + results + " \u00b7 \u5f85 " + pending;
         }
+        if (!searchFailures.isEmpty()) secondLine += " · 失败 " + searchFailures.size();
         setSearchStatusText(firstLine, secondLine);
+    }
+
+    private void initSearchFailureNotice() {
+        searchFailureNotice = new TextView(this);
+        searchFailureNotice.setTextColor(0xFFFFD28A);
+        searchFailureNotice.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.ts_16));
+        searchFailureNotice.setBackgroundResource(R.drawable.shape_user_focus);
+        searchFailureNotice.setGravity(Gravity.CENTER);
+        searchFailureNotice.setPadding(10, 3, 10, 3);
+        searchFailureNotice.setMaxWidth(getResources().getDisplayMetrics().widthPixels / 3);
+        searchFailureNotice.setMaxLines(2);
+        searchFailureNotice.setFocusable(true);
+        searchFailureNotice.setVisibility(View.GONE);
+        searchFailureNotice.setOnClickListener(view -> showSearchFailures());
+        if (mSearchTitle.getParent() instanceof LinearLayout) {
+            ((LinearLayout) mSearchTitle.getParent()).addView(searchFailureNotice, 1,
+                    new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT));
+        }
+    }
+
+    private void recordSearchOutcome(AbsXml data) {
+        if (data == null || !isCurrentSearchToken(data.searchToken)) return;
+        if (SearchOutcomePolicy.isFailure(data)) searchFailures.put(data.sourceKey, SearchOutcomePolicy.safeCode(data.searchErrorCode));
+        else searchFailures.remove(data.sourceKey);
+        updateSearchFailureNotice();
+        updateSearchStatus();
+    }
+
+    private String searchSourceName(String key) {
+        SourceBean source = ApiConfig.get().getSource(key);
+        return source == null ? "已停用来源" : source.getName();
+    }
+
+    private void updateSearchFailureNotice() {
+        if (searchFailureNotice == null) return;
+        StringBuilder names = new StringBuilder();
+        for (String key : searchFailures.keySet()) { if (names.length() > 0) names.append("、"); names.append(searchSourceName(key)); }
+        searchFailureNotice.setText("失败来源：" + names + "\n查看原因 / 重试");
+        searchFailureNotice.setVisibility(searchFailures.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void showSearchFailures() {
+        List<String> keys = new ArrayList<>(searchFailures.keySet());
+        if (keys.isEmpty()) return;
+        CharSequence[] labels = new CharSequence[keys.size()];
+        for (int i = 0; i < keys.size(); i++) labels[i] = searchSourceName(keys.get(i)) + " · " + searchFailures.get(keys.get(i));
+        new AlertDialog.Builder(this).setTitle("搜索失败的来源").setItems(labels, (dialog, position) -> {
+            String key = keys.get(position), code = searchFailures.get(key);
+            AlertDialog.Builder detail = new AlertDialog.Builder(this).setTitle(searchSourceName(key))
+                    .setMessage(SearchOutcomePolicy.message(code) + "（" + SearchOutcomePolicy.safeCode(code) + "）\n其他来源结果已保留。"
+                            + (allRunCount.get() > 0 ? "本轮搜索结束后可单独重试。" : ""))
+                    .setNegativeButton("关闭", null);
+            if (allRunCount.get() == 0) detail.setPositiveButton("重试该来源", (ignored, which) -> retryFailedSource(key));
+            detail.show();
+        }).setNegativeButton("关闭", null).show();
+    }
+
+    private void retryFailedSource(String key) {
+        if (allRunCount.get() > 0 || TextUtils.isEmpty(searchTitle)) return;
+        currentSearchToken = String.valueOf(searchTokenSeq.incrementAndGet());
+        pendingSearchKeys.clear(); pendingSearchKeys.add(key);
+        waitingSearchTasks.clear(); releasedSearchKeys.remove(key); startedSearchKeys.remove(key);
+        allRunCount.set(1); searchPaused = false;
+        String removed = searchFailures.remove(key);
+        if ("TIMEOUT".equals(removed)) timedOutSearchCount.set(Math.max(0, timedOutSearchCount.get() - 1));
+        updateSearchFailureNotice();
+        if (searchExecutorService == null || searchExecutorService.isShutdown()) searchExecutorService = createSearchExecutor();
+        if (searchTimeoutExecutor == null || searchTimeoutExecutor.isShutdown()) searchTimeoutExecutor = Executors.newSingleThreadScheduledExecutor();
+        startedSearchKeys.add(key);
+        if (!submitSearchTask(new SearchTask(key, searchTitle, currentSearchToken, true))) {
+            markSearchFinished(key, currentSearchToken);
+            recordSearchOutcome(SearchOutcomePolicy.failure(key, currentSearchToken, "SOURCE_UNAVAILABLE"));
+            finishSearchIfDone();
+        }
+        updateSearchStatus();
     }
 
     private void setSearchStatusText(String firstLine, String secondLine) {
@@ -1146,6 +1299,7 @@ public class FastSearchActivity extends BaseActivity {
 
     private void cancel() {
         OkGo.getInstance().cancelTag("search");
+        if (sourceViewModel != null) sourceViewModel.cancelNativeSearchRequests();
     }
 
     @Override

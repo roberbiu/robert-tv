@@ -1849,16 +1849,12 @@ public class VodController extends BaseController {
 
     //尝试去bom
     public String getWebPlayUrlIfNeeded(String webPlayUrl) {
-        if (webPlayUrl != null && !webPlayUrl.contains("127.0.0.1:9978") &&  webPlayUrl.contains(".m3u8")) {
-            try {
-                String urlEncode = URLEncoder.encode(webPlayUrl, "UTF-8");
-                LOG.i("echo-BOM-------");
-                return ControlManager.get().getAddress(true) + "proxy?go=bom&url=" + urlEncode;
-            } catch (UnsupportedEncodingException e) {
-                e.printStackTrace();
-            }
-        }
+        // BOM及分片由受管媒体代理处理，不再建立含任意目标URL的LAN代理。
         return webPlayUrl;
+    }
+
+    public void setCloudQualityAvailable(boolean available) {
+        if (mVideoTrackBtn != null) mVideoTrackBtn.setText(available ? "清晰度" : "视频轨道");
     }
 
     public String encodeUrl(String url) {
@@ -1960,17 +1956,8 @@ public class VodController extends BaseController {
     }
 
     private void processM3u8Content(String url, String content, HashMap<String, String> headers) {
-        String basePath = getBasePath(url);
-        RemoteServer.m3u8Content = M3u8.purify(basePath, content);
-        if (RemoteServer.m3u8Content == null || M3u8.currentAdCount==0) {
-            LOG.i("echo-m3u8内容解析：未检测到广告");
-            listener.startPlayUrl(url, headers);
-        } else {
-            String proxyUrl = ControlManager.get().getAddress(true) + "proxyM3u8";
-            listener.onM3u8ProxyUrl(proxyUrl, url);
-            listener.startPlayUrl(proxyUrl, headers);
-            Toast.makeText(getContext(), "已移除视频广告 "+M3u8.currentAdCount+" 条", Toast.LENGTH_SHORT).show();
-        }
+        // 正式目录不使用可被其他播放覆盖的静态M3U8槽位。
+        listener.startPlayUrl(url, headers);
     }
 
     private void fetchAndProcessForwardUrl(final String forwardUrl, final HashMap<String, String> headers,
