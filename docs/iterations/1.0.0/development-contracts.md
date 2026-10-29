@@ -21,6 +21,7 @@
 - `SourceResult`区分data与`DomainError`；错误code为NETWORK/SOURCE_UNAVAILABLE/NO_MATCH/AUTH_REQUIRED/SESSION_EXPIRED/ENTITLEMENT_REQUIRED/UNSUPPORTED/CANCELLED/INVALID_RESPONSE，不透传原异常/响应。AUTH_REQUIRED是无副作用结果，只有Root确认显式用户动作后启动扫码。
 - `PublicNetworkPolicy.requirePublicUrl(url, allowHttp)`与`publicDns(delegate)`供外部HTTP调用复用。检查连接实际使用的DNS结果、系统TLS与重定向；此上游规则不用于本机租约入口或手机LAN配对。
 - 传统type0/type1 CMS分类、列表、详情、搜索改用`source.net.CmsMetadataHttp.get(SourceBean[, timeoutSeconds])`构造OkGo请求，type4维持旧分支而受管目录不准入。该专用客户端从新Builder开始，系统TLS、实际公共DNS、直连、无Cookie/鉴权器或继承请求头；最多两次同host重定向且HTTPS不降级，响应含未知长度流最多4MiB。请求总预算5—30秒，fallback详情6秒，callStart定时取消也覆盖排队，关闭OkGo重试与磁盘缓存。仅共享dispatcher保留既有`cancelTag`，不修改媒体或手机LAN的网络规则。
+- 公网地址由`net.PublicAddressPolicy`统一判定，拒绝198.18/15等fake-IP、私网、文档、共享地址及IPv6特殊/隧道空间，不能将保留地址作为连接兜底。生产自管客户端显式使用`RecoveringDns.system()`：系统解析最多等待750毫秒，只有失败或不合规才向固定官方AliDNS HTTPS JSON端点查询域名；两阶段连同排队共3秒预算。固定bootstrap为223.5.5.5/223.6.6.6，系统TLS、无代理/Cookie/鉴权器/重定向，单响应64KiB，逐项验证Question/Status/Type/CNAME链与数值公网IP。数值IP、单标签和本地/特殊域名不外送。系统与HTTPS分别使用2线程/8排队有界池；超时/中断取消已创建HTTPS Call。原生系统解析可能不响应中断但不会无限造线程；外层HTTP Call取消若未中断DNS线程，内部恢复最多仍可工作至3秒期限，父操作仍须核对取消与代际，不能发布晚到结果。不持久化DNS状态，不修改设备、Hawk或全局OkGo DNS；手机LAN与loopback租约入口不使用这条上游规则。
 
 ## 手机输入与媒体边界
 
