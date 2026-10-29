@@ -45,7 +45,7 @@ public class RemoteDialog extends BaseDialog {
     private void refreshQRCode() {
         try {
             inputSessionUrl = ControlManager.get().openInputSession();
-            tvAddress.setText("在同一网络下，用手机扫码输入搜索内容\n关闭窗口后，本次连接失效");
+            tvAddress.setText("在同一网络下，用手机扫码输入片名\n二维码5分钟内有效，离开页面即失效");
             ivQRCode.setImageBitmap(QRCodeGen.generateBitmap(inputSessionUrl,
                     AutoSizeUtils.mm2px(getContext(), 240), AutoSizeUtils.mm2px(getContext(), 240)));
         } catch (RuntimeException ignored) {

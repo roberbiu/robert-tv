@@ -43,8 +43,10 @@ public class CloudPolicyTest {
         CloudSessionManager.Snapshot leaseIdentity = manager.require(CloudProvider.QUARK);
         manager.rotate(leaseIdentity, "__pus=fake; __puus=new");
         assertEquals("__pus=fake; __puus=new", CloudRuntime.headersForMedia(manager, leaseIdentity, "https://download.quark.cn/a", "https://download.quark.cn/b").get("Cookie"));
-        for (String redirected : Arrays.asList("https://another.quark.cn/b", "https://download.quark.cn.evil.example/b", "https://media.example.org/b"))
+        for (String redirected : Arrays.asList("https://another.quark.cn/b", "https://media.example.org/b"))
             assertFalse(CloudRuntime.headersForMedia(manager, leaseIdentity, "https://download.quark.cn/a", redirected).containsKey("Cookie"));
+        try { CloudRuntime.headersForMedia(manager, leaseIdentity, "https://download.quark.cn/a", "https://download.quark.cn.evil.example/b"); fail(); }
+        catch (CloudException expected) { assertEquals(CloudException.Code.INVALID_RESPONSE, expected.code); }
         manager.complete(manager.beginAuthorization(CloudProvider.QUARK), "fake_account_b", "__pus=other");
         try { CloudRuntime.headersForMedia(manager, leaseIdentity, "https://download.quark.cn/a", "https://download.quark.cn/b"); fail(); }
         catch (CloudException expected) { assertEquals(CloudException.Code.CANCELLED, expected.code); }

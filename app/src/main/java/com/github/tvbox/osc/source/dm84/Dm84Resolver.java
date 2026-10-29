@@ -33,7 +33,7 @@ public final class Dm84Resolver {
     static final String PLAYER_HOST = "hhjx.hhplayer.com";
     private static final Set<String> PLAYER_HOSTS = Collections.singleton(PLAYER_HOST);
     private static final Pattern BOOTSTRAP = Pattern.compile("window\\.__HHJX_BOOTSTRAP__\\s*=\\s*(\\{[^\\n]{1,16384}?\\});");
-    private static final OkHttpClient CLIENT = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns())
+    private static final OkHttpClient CLIENT = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns()).proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(12, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).writeTimeout(15, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).build();

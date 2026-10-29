@@ -27,7 +27,7 @@ final class CloudHttpTransport {
     private final OkHttpClient client;
     CloudHttpTransport() { this(new OkHttpClient.Builder().dns(NetworkPolicy.publicDns()).build()); }
     CloudHttpTransport(OkHttpClient client) {
-        this.client = client.newBuilder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).writeTimeout(20, TimeUnit.SECONDS)
+        this.client = client.newBuilder().proxy(java.net.Proxy.NO_PROXY).connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).writeTimeout(20, TimeUnit.SECONDS)
                 .callTimeout(20, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build();
     }
 

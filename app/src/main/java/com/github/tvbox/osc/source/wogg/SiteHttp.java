@@ -22,7 +22,7 @@ import okhttp3.Response;
 
 /** 站点匿名客户端，不共享网盘会话、Cookie或网页脚本执行能力。 */
 public final class SiteHttp {
-    private static final OkHttpClient CLIENT = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns())
+    private static final OkHttpClient CLIENT = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns()).proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(12, TimeUnit.SECONDS).readTimeout(18, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).build();

@@ -36,7 +36,7 @@ public final class PublicMetadataHttp {
 
     public PublicMetadataHttp() {
         // 全新客户端使用系统TLS，不继承旧全局Client的自定义hosts、代理或TLS配置。
-        client = new OkHttpClient.Builder().dns(PublicNetworkPolicy.publicDns(Dns.SYSTEM)).proxy(Proxy.NO_PROXY)
+        client = new OkHttpClient.Builder().dns(PublicNetworkPolicy.publicDns()).proxy(Proxy.NO_PROXY)
                 .cookieJar(CookieJar.NO_COOKIES).authenticator(Authenticator.NONE)
                 .proxyAuthenticator(Authenticator.NONE).followRedirects(false).followSslRedirects(false)
                 .connectTimeout(5, TimeUnit.SECONDS).readTimeout(6, TimeUnit.SECONDS)

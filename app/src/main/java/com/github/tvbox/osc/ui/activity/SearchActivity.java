@@ -753,10 +753,7 @@ public class SearchActivity extends BaseActivity {
 
     private void search(String title) {
         cancel();
-        if (remoteDialog != null) {
-            remoteDialog.dismiss();
-            remoteDialog = null;
-        }
+        closeRemoteInput();
         showLoading();
         etSearch.setText(title);
 
@@ -1264,8 +1261,20 @@ public class SearchActivity extends BaseActivity {
         if (sourceViewModel != null) sourceViewModel.cancelNativeSearchRequests();
     }
 
+    private void closeRemoteInput() {
+        RemoteDialog previous = remoteDialog;
+        remoteDialog = null;
+        if (previous != null) previous.dismiss();
+    }
+
+    @Override protected void onPause() {
+        closeRemoteInput();
+        super.onPause();
+    }
+
     @Override
     protected void onDestroy() {
+        closeRemoteInput();
         super.onDestroy();
         cancel();
         try {

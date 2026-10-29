@@ -1030,6 +1030,12 @@ public class DetailActivity extends BaseActivity {
                         tvSeriesGroup.setVisibility(View.GONE);
                         tvPlay.setVisibility(View.GONE);
                         mEmptyPlayList.setVisibility(View.VISIBLE);
+                        TextView emptyHint = findViewById(R.id.tvEmptyPlaylistHint);
+                        SourceBean emptySource = ApiConfig.get().getSource(sourceKey);
+                        boolean unsupportedShare = emptySource != null && "wogg".equals(emptySource.getAdapterId())
+                                && mVideo.note != null && mVideo.note.contains("分享类型暂未支持");
+                        emptyHint.setText(unsupportedShare ? "此条目暂无本应用支持的夸克 / UC版本，请尝试切源"
+                                : "暂未取得播放版本，可尝试切换来源");
                         handleNoPlayableDetail();
                     }
                 } else {

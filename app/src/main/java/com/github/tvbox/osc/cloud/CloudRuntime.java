@@ -19,6 +19,9 @@ import okhttp3.HttpUrl;
 
 /** 应用级服务入口。get与站点构造不联网，密钥/会话首次在后台实际使用时加载。 */
 public final class CloudRuntime {
+    /** 本机保存状态，不代表已经向服务端验证授权或账号权益。 */
+    public enum LocalAuthorization { STORED, NONE }
+
     private static volatile CloudRuntime instance;
     private final Context context;
     private final ExecutorService cleanup = Executors.newSingleThreadExecutor();
@@ -63,8 +66,20 @@ public final class CloudRuntime {
         }
     }
 
-    /** 仅反映已经在后台读过的缓存状态，主线程不触发密钥访问。 */
+    /** 仅反映已加载缓存；false也可能是尚未加载，界面不能据此显示“未授权”。 */
     public boolean isAuthorizedCached(CloudProvider provider) { Services value = services; return value != null && value.sessions.hasSession(provider); }
+
+    /** 仅从后台调用；加载本机私有状态，不发请求、不暴露账号标识或凭据。 */
+    public LocalAuthorization readLocalAuthorization(CloudProvider provider) throws CloudException {
+        if (provider == null) throw new CloudException(CloudException.Code.UNSUPPORTED, null);
+        try {
+            services().sessions.require(provider);
+            return LocalAuthorization.STORED;
+        } catch (CloudException failure) {
+            if (failure.code == CloudException.Code.AUTH_REQUIRED) return LocalAuthorization.NONE;
+            throw failure;
+        }
+    }
 
     public QrLoginCoordinator.Handle login(CloudProvider provider, QrLoginCoordinator.Listener listener, Executor callbacks) {
         return login.start(provider, listener, callbacks);

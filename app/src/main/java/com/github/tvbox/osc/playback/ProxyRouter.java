@@ -40,7 +40,7 @@ public final class ProxyRouter {
     private static final Charset UTF8 = Charset.forName("UTF-8");
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern URI_ATTRIBUTE = Pattern.compile("URI=\"([^\"]+)\"");
-    private final OkHttpClient client = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns())
+    private final OkHttpClient client = new OkHttpClient.Builder().dns(NetworkPolicy.publicDns()).proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).writeTimeout(20, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).build();
     private final Map<String, MediaLease> leases = new LinkedHashMap<>();

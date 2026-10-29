@@ -60,7 +60,7 @@ public final class CmsMetadataHttp {
             if (client == null) {
                 // 从全新Builder开始，避免继承旧全局Cookie、TLS、日志、hosts和代理规则。
                 OkHttpClient.Builder builder = new OkHttpClient.Builder()
-                        .dns(PublicNetworkPolicy.publicDns(Dns.SYSTEM)).proxy(Proxy.NO_PROXY)
+                        .dns(PublicNetworkPolicy.publicDns()).proxy(Proxy.NO_PROXY)
                         .cookieJar(CookieJar.NO_COOKIES).authenticator(Authenticator.NONE)
                         .proxyAuthenticator(Authenticator.NONE).followRedirects(false).followSslRedirects(false)
                         .retryOnConnectionFailure(false).connectTimeout(5, TimeUnit.SECONDS)

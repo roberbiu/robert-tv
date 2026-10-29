@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.github.tvbox.osc.util.LOG;
+import com.github.tvbox.osc.source.PublicNetworkPolicy;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -37,7 +38,8 @@ public final class SourceRegistry {
     private final SharedPreferences preferences;
     private final AtomicBoolean refreshing = new AtomicBoolean();
     private final ExecutorService updater = Executors.newSingleThreadExecutor();
-    private final OkHttpClient client = new OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+    private final OkHttpClient client = new OkHttpClient.Builder().dns(PublicNetworkPolicy.publicDns())
+            .proxy(java.net.Proxy.NO_PROXY).connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build();
     private volatile SourceSnapshot snapshot = SourceSnapshot.empty();

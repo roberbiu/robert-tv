@@ -85,6 +85,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
     private View llApi;
     private View llApiHistory;
     private View llApiLine;
+    private com.github.tvbox.osc.ui.dialog.CloudAccountsDialog cloudAccountsDialog;
     private TextView tvHomeApi;
     private TextView tvDns;
     private TextView tvHomeRec;
@@ -811,6 +812,19 @@ public class ModelSettingFragment extends BaseLazyFragment {
         findViewById(R.id.llIjkCachePlay).setOnClickListener((view -> onClickIjkCachePlay(view)));
         findViewById(R.id.llClearCache).setOnClickListener((view -> onClickClearCache(view)));
         hideManagedCatalogSettings();
+        findViewById(R.id.llCloudAccounts).setOnClickListener(view -> {
+            if (cloudAccountsDialog != null) cloudAccountsDialog.dismiss();
+            cloudAccountsDialog = new com.github.tvbox.osc.ui.dialog.CloudAccountsDialog(mContext);
+            cloudAccountsDialog.show();
+        });
+    }
+
+    @Override public void onPause() {
+        if (cloudAccountsDialog != null) {
+            cloudAccountsDialog.dismiss();
+            cloudAccountsDialog = null;
+        }
+        super.onPause();
     }
 
     private String homeSourceName() {
