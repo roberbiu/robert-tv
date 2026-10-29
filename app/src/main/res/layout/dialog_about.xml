@@ -12,7 +12,7 @@
         android:layout_height="wrap_content"
         android:lineSpacingExtra="@dimen/ts_50"
         android:lineSpacingMultiplier="0"
-        android:text="Robert影视\n面向电视遥控器的影视聚合客户端。内容及字幕的可用性取决于来源，字幕状态以页面标注和实际播放为准。\n\n项目源码与问题反馈\nhttps://github.com/roberbiu/robert-tv\n\n基于 TVBoxOS 改造，遵循 AGPL-3.0。感谢上游作者：\nhttps://github.com/CatVodTVOfficial/TVBoxOSC\nhttps://github.com/q215613905/TVBoxOS"
+        android:text="榴榴芙芙影视\n面向电视遥控器的影视聚合客户端。内容及字幕的可用性取决于来源，字幕状态以页面标注和实际播放为准。\n\n项目源码与问题反馈\nhttps://github.com/roberbiu/robert-tv\n\n基于 TVBoxOS 改造，遵循 AGPL-3.0。感谢上游作者：\nhttps://github.com/CatVodTVOfficial/TVBoxOSC\nhttps://github.com/q215613905/TVBoxOS"
         android:textColor="@color/dialog_text_primary"
         android:textSize="@dimen/ts_24" />
 

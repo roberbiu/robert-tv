@@ -1,8 +1,12 @@
-# Robert影视
+# 榴榴芙芙影视
 
 面向电视遥控器的影视点播应用，基于 [TVBoxOS](https://github.com/q215613905/TVBoxOS) 改造。
 
-**当前状态：0.1.0-preview.2 试装版。** 首页默认最近观看，搜索框关闭自动触控笔手写。33 项单元测试与独立签名构建通过；本次与首版的验证范围分别记录，雷鸟鹤 6 Ultra 真机仍待安装验收。
+应用原名 Robert影视。当前源码已按用户选择切换为“榴榴芙芙影视”和 B 版双猫电视徽章；包名、仓库地址与发布签名沿用。已发布的 preview.2 保留其原有名称与验证记录。
+
+[下一版导航与来源方案](docs/navigation-sources-plan.md) · [品牌资源说明](docs/branding.md)
+
+**当前已发布版本：0.1.0-preview.2 试装版。** 首页默认最近观看，搜索框关闭自动触控笔手写。33 项单元测试与独立签名构建通过；本次与首版的验证范围分别记录，雷鸟鹤 6 Ultra 真机仍待安装验收。
 
 [获取安装包](https://github.com/roberbiu/robert-tv/releases) · [安装说明](docs/install.md) · [本次验证](docs/validation-2026-10-29.md) · [首版验证](docs/validation-2026-10-28.md)
 
@@ -35,7 +39,7 @@
 
 | 项目 | 取值 |
 | --- | --- |
-| 项目与应用名称 | Robert影视 |
+| 应用名称 | 榴榴芙芙影视 |
 | GitHub 仓库 | [roberbiu/robert-tv](https://github.com/roberbiu/robert-tv) |
 | 本地仓库 | C:/coding/myPro/robert-tv |
 | 固定上游 | q215613905/TVBoxOS |
