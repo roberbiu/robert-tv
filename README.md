@@ -4,7 +4,9 @@
 
 应用原名 Robert影视。当前源码已按用户选择切换为“榴榴芙芙影视”和 B 版双猫电视徽章；包名、仓库地址与发布签名沿用。已发布的 preview.2 保留其原有名称与验证记录。
 
-[下一版导航与来源方案](docs/navigation-sources-plan.md) · [品牌资源说明](docs/branding.md)
+**1.0.0 正式版迭代：当前为阶段1，产品需求草案待用户确认。** 确认后由架构师制定并独立审校方案，可行后交开发工程师实施；目前没有发布1.0.0，也未将预览版测试视为正式验收。
+
+[1.0.0 产品需求确认稿](docs/iterations/1.0.0/product-requirements.md) · [阶段状态](docs/iterations/1.0.0/README.md) · [前期导航与来源调研](docs/navigation-sources-plan.md) · [品牌资源说明](docs/branding.md)
 
 **当前已发布版本：0.1.0-preview.2 试装版。** 首页默认最近观看，搜索框关闭自动触控笔手写。33 项单元测试与独立签名构建通过；本次与首版的验证范围分别记录，雷鸟鹤 6 Ultra 真机仍待安装验收。
 
